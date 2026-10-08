@@ -7,7 +7,7 @@
 ## STATUS
 
 ```
-Current phase: 7 (starting) — Phases 5 and 6 completed fully while Phase 3/4 stay blocked on user's Colab session (by design, see Blockers below).
+Current phase: 8 (starting, polish & writeup) — Phases 5, 6, 7 all completed fully while Phase 3/4 stay blocked on user's Colab session (by design, see Blockers below).
 Last completed task:
   - REWORK of Phases 1-2: replaced hand-drawn synthetic shapes with ModelNet10 (real public CAD dataset, no signup) after user feedback that fake data "makes people lose interest." Both modalities derived from the same real mesh per example. See docs/dataset_rework_notes.md.
   - Found and fixed a REAL BUG, not just a tuning problem: model/fusion.py had NUM_CLASSES=4 hardcoded (leftover from the old 4-shape synthetic dataset), silently capping the model's output head at 4 of ModelNet10's 10 real classes. Found via ablation (vision-only=68.9%, lidar-only=87.7%, but the fused model scored only 35% -- worse than either alone, which is what made it clearly a bug and not just undertraining). Full story in docs/fusion_bug_notes.md. Fixed by importing NUM_CLASSES from the dataset's class list everywhere, plus added a regression test (test_fusion_num_classes_matches_real_dataset) so this exact bug class can't silently reappear.
@@ -16,9 +16,9 @@ Last completed task:
   - Re-profiled the corrected model (docs/phase2_profiling_notes.md updated): self-attention in the vision encoder is still the dominant single op (3.16ms/block of 6.49ms vision-encoder time, out of 7.44ms total forward pass) -- bottleneck finding unchanged, just updated numbers for the new 40x40/101-token sequence length.
   - Phase 3 kernel code written (untested): kernels/reference.py (verified against real model math, diff 3.5e-10), kernels/fused_attention.cu (FlashAttention-style: K/V loaded into shared memory once per (batch,head) block, never materializes the [N,N] score matrix in global memory), kernels/custom_call.cpp (XLA custom-call glue), kernels/register.py (JAX jax.extend.ffi registration), kernels/tests/test_correctness.py (skips cleanly without a built .so), scripts/colab_sync.md (Colab build/debug steps, written expecting first-build compile errors).
   - Full test suite: 13 passed, 3 skipped (the 3 GPU-dependent kernel tests, correctly skip on CPU-only machines) -- data_pipeline (7), model (5), kernels/reference (1).
-Next task: Phase 7 (telemetry -> hard-case mining closed loop). Separately: hand off to user for Colab per scripts/colab_sync.md whenever they're free -- when they report back what broke/worked and real benchmark numbers, update kernels/, docs/benchmark_results.md (Phase 4), docs/edge_dual_path_notes.md (real CUDA-path latency), and this STATUS block. Do not fabricate GPU numbers in the meantime.
-Blockers: Phase 3 execution AND Phase 4 (benchmarking) remain blocked on the user's Colab session (by design). Phases 5 and 6 are now DONE despite that blocker, proving the reordering decision was sound. Continuing to Phase 7 next, which also doesn't need Colab.
-Extra context for whoever resumes this: a real k3d cluster ("fenris") is currently UP on this machine with 3 nodes and 2 live Deployments (fenris-inference-stable on v2, fenris-inference-canary on v2) -- check `kubectl get pods` / `k3d cluster list` before assuming it needs to be recreated. Docker image `fenris-inference:v1` exists locally and inside the cluster.
+Next task: Phase 8 (polish & writeup) -- docs/final_report.md, README.md, maybe a short demo recording of the Phase 6 canary sequence. Separately, still pending: hand off to user for Colab per scripts/colab_sync.md whenever they're free -- when they report back what broke/worked and real benchmark numbers, update kernels/, docs/benchmark_results.md (Phase 4), docs/edge_dual_path_notes.md (real CUDA-path latency), and this STATUS block. Do not fabricate GPU numbers in the meantime.
+Blockers: Phase 3 execution AND Phase 4 (benchmarking) remain blocked on the user's Colab session (by design). Phases 5, 6, 7 are now DONE despite that blocker, proving the reordering decision was sound.
+Extra context for whoever resumes this: a real k3d cluster ("fenris") is currently UP on this machine with 3 nodes and 2 live Deployments (fenris-inference-stable on v2, fenris-inference-canary on v2) -- check `kubectl get pods` / `k3d cluster list` before assuming it needs to be recreated. Docker image `fenris-inference:v1` exists locally and inside the cluster (now includes /hard_cases endpoint). `data_pipeline/telemetry/hard_cases.json` and `model/checkpoints/model_finetuned.pkl` are real artifacts from the Phase 7 run, not placeholders.
 Budget spent so far: $0.00 / $10.00
 Last updated: 2026-10-08
 ```
@@ -166,11 +166,11 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 ### Phase 7 — Telemetry → hard-case mining closed loop
 **Goal:** close the loop — field telemetry feeds back into the data pipeline.
 
-- [ ] `k8s/telemetry_collector.py`: nodes report low-confidence predictions (using the stub from Phase 1).
-- [ ] Wire telemetry output into `data_pipeline/hard_case_miner.py` (now implemented for real).
-- [ ] Re-run a small retraining step on mined hard cases, show a before/after metric change (even a small, honest one).
+- [x] `k8s/serve.py`: added real `/hard_cases` endpoint (uses `data_pipeline/hard_case_miner.py`'s `find_hard_cases`, no longer just a stub) — rebuilt image, redeployed to the live cluster, verified live: flagged 15/200 examples as hard cases from a real running pod.
+- [x] `k8s/telemetry_collector.py`: polled both live services (`fenris-inference-stable`, `fenris-inference-canary`) over real `kubectl port-forward` + HTTP, wrote aggregated report to `data_pipeline/telemetry/hard_cases.json`.
+- [x] `model/retrain_on_hard_cases.py`: mined hard cases from the full 908-example val pool (70 found, 7.7% — consistent with the live pods' 7.5%, a nice cross-check), split 35/35 into mine/held-out-eval, brief fine-tune (8 epochs) on train shards + oversampled mined cases.
 
-**Definition of Done:** one full loop demonstrated: inference flags a hard case → it's mined → it's added to a retraining shard → retrained checkpoint shows a measured (even if modest) change on a held-out hard-case set.
+**Definition of Done:** one full loop demonstrated: inference flags a hard case → it's mined → it's added to a retraining shard → retrained checkpoint shows a measured (even if modest) change on a held-out hard-case set. ✅ DONE, real measured numbers (full story in `docs/hard_case_mining_notes.md`): held-out hard-case eval accuracy **25.71% → 37.14% (+11.43 points)**, overall val accuracy barely moved (86.01% → 86.34%, no regression). New checkpoint saved separately as `model_finetuned.pkl` (deployed checkpoint not silently swapped). 19/22 tests passing (3 GPU-dependent skip).
 
 ---
 

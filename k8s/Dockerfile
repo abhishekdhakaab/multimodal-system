@@ -10,7 +10,7 @@ COPY k8s/requirements-serve.txt .
 RUN pip install --no-cache-dir -r requirements-serve.txt
 
 COPY model/__init__.py model/vision_encoder.py model/lidar_encoder.py model/fusion.py model/full_model.py model/
-COPY data_pipeline/__init__.py data_pipeline/modelnet_loader.py data_pipeline/
+COPY data_pipeline/__init__.py data_pipeline/modelnet_loader.py data_pipeline/hard_case_miner.py data_pipeline/
 COPY k8s/serve.py serve.py
 
 COPY model/checkpoints/model.pkl model/checkpoints/model.pkl

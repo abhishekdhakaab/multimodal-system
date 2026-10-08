@@ -19,10 +19,12 @@ import os
 import pickle
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 from model.full_model import forward
+from data_pipeline.hard_case_miner import find_hard_cases
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/app/model/checkpoints/model.pkl")
 MODEL_VERSION = os.environ.get("MODEL_VERSION", "unknown")
@@ -31,7 +33,7 @@ VAL_SHARD_PATH = os.environ.get("VAL_SHARD_PATH", "/app/data_pipeline/shards/val
 PORT = int(os.environ.get("PORT", "8080"))
 
 
-def compute_accuracy():
+def run_inference():
     with open(MODEL_PATH, "rb") as f:
         params = pickle.load(f)
 
@@ -41,13 +43,14 @@ def compute_accuracy():
     labels = jnp.array(data["labels"])
 
     logits = forward(params, images, points, backend="jax")
-    preds = jnp.argmax(logits, axis=-1)
-    acc = float(jnp.mean(preds == labels))
-    return acc
+    probs = np.array(jax.nn.softmax(logits, axis=-1))
+    preds = probs.argmax(axis=-1)
+    acc = float(np.mean(preds == np.array(labels)))
+    return acc, probs, np.array(labels)
 
 
 print(f"[serve.py] loading {MODEL_PATH}, computing real accuracy on {VAL_SHARD_PATH}...")
-ACCURACY = compute_accuracy()
+ACCURACY, PROBS, LABELS = run_inference()
 print(f"[serve.py] model_version={MODEL_VERSION} node_type={NODE_TYPE} measured_accuracy={ACCURACY:.4f}")
 
 
@@ -68,6 +71,17 @@ class Handler(BaseHTTPRequestHandler):
                 "accuracy": ACCURACY,
                 "model_version": MODEL_VERSION,
                 "node_type": NODE_TYPE,
+            })
+        elif self.path == "/hard_cases":
+            # real telemetry: which of this pod's served examples had low-confidence
+            # predictions, found by actually running the model, not a stub
+            hard_idx = find_hard_cases(PROBS, LABELS, threshold=0.6)
+            self._send_json({
+                "model_version": MODEL_VERSION,
+                "node_type": NODE_TYPE,
+                "num_examples": int(len(LABELS)),
+                "hard_case_indices": hard_idx,
+                "hard_case_confidences": [float(PROBS[i].max()) for i in hard_idx],
             })
         else:
             self._send_json({"error": "not found"}, status=404)
