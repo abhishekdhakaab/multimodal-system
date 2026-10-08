@@ -7,7 +7,7 @@
 ## STATUS
 
 ```
-Current phase: 8 (starting, polish & writeup) — Phases 5, 6, 7 all completed fully while Phase 3/4 stay blocked on user's Colab session (by design, see Blockers below).
+Current phase: 8 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
 Last completed task:
   - REWORK of Phases 1-2: replaced hand-drawn synthetic shapes with ModelNet10 (real public CAD dataset, no signup) after user feedback that fake data "makes people lose interest." Both modalities derived from the same real mesh per example. See docs/dataset_rework_notes.md.
   - Found and fixed a REAL BUG, not just a tuning problem: model/fusion.py had NUM_CLASSES=4 hardcoded (leftover from the old 4-shape synthetic dataset), silently capping the model's output head at 4 of ModelNet10's 10 real classes. Found via ablation (vision-only=68.9%, lidar-only=87.7%, but the fused model scored only 35% -- worse than either alone, which is what made it clearly a bug and not just undertraining). Full story in docs/fusion_bug_notes.md. Fixed by importing NUM_CLASSES from the dataset's class list everywhere, plus added a regression test (test_fusion_num_classes_matches_real_dataset) so this exact bug class can't silently reappear.
@@ -16,8 +16,8 @@ Last completed task:
   - Re-profiled the corrected model (docs/phase2_profiling_notes.md updated): self-attention in the vision encoder is still the dominant single op (3.16ms/block of 6.49ms vision-encoder time, out of 7.44ms total forward pass) -- bottleneck finding unchanged, just updated numbers for the new 40x40/101-token sequence length.
   - Phase 3 kernel code written (untested): kernels/reference.py (verified against real model math, diff 3.5e-10), kernels/fused_attention.cu (FlashAttention-style: K/V loaded into shared memory once per (batch,head) block, never materializes the [N,N] score matrix in global memory), kernels/custom_call.cpp (XLA custom-call glue), kernels/register.py (JAX jax.extend.ffi registration), kernels/tests/test_correctness.py (skips cleanly without a built .so), scripts/colab_sync.md (Colab build/debug steps, written expecting first-build compile errors).
   - Full test suite: 13 passed, 3 skipped (the 3 GPU-dependent kernel tests, correctly skip on CPU-only machines) -- data_pipeline (7), model (5), kernels/reference (1).
-Next task: Phase 8 (polish & writeup) -- docs/final_report.md, README.md, maybe a short demo recording of the Phase 6 canary sequence. Separately, still pending: hand off to user for Colab per scripts/colab_sync.md whenever they're free -- when they report back what broke/worked and real benchmark numbers, update kernels/, docs/benchmark_results.md (Phase 4), docs/edge_dual_path_notes.md (real CUDA-path latency), and this STATUS block. Do not fabricate GPU numbers in the meantime.
-Blockers: Phase 3 execution AND Phase 4 (benchmarking) remain blocked on the user's Colab session (by design). Phases 5, 6, 7 are now DONE despite that blocker, proving the reordering decision was sound.
+Next task: NOTHING pending on this machine. The only remaining work is Phase 3/4 execution, which requires the user to run scripts/colab_sync.md on Colab. When they report back what broke/worked and real benchmark numbers, update kernels/, docs/benchmark_results.md (Phase 4), docs/edge_dual_path_notes.md (real CUDA-path latency), docs/final_report.md's tables, and this STATUS block. Do not fabricate GPU numbers in the meantime.
+Blockers: Phase 3 execution AND Phase 4 (benchmarking) remain blocked on the user's Colab session (by design). Every other phase is complete with real, measured results.
 Extra context for whoever resumes this: a real k3d cluster ("fenris") is currently UP on this machine with 3 nodes and 2 live Deployments (fenris-inference-stable on v2, fenris-inference-canary on v2) -- check `kubectl get pods` / `k3d cluster list` before assuming it needs to be recreated. Docker image `fenris-inference:v1` exists locally and inside the cluster (now includes /hard_cases endpoint). `data_pipeline/telemetry/hard_cases.json` and `model/checkpoints/model_finetuned.pkl` are real artifacts from the Phase 7 run, not placeholders.
 Budget spent so far: $0.00 / $10.00
 Last updated: 2026-10-08
@@ -177,11 +177,11 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 ### Phase 8 — Polish & writeup
 **Goal:** make the finished project legible to an interviewer.
 
-- [ ] `docs/final_report.md`: architecture, what was measured, what was honestly simulated vs. real, numbers table, lessons learned.
-- [ ] Clean up README at project root with quickstart instructions.
-- [ ] Short demo script/recording of the Phase 6 canary/rollback sequence (most visually compelling part).
+- [x] `docs/final_report.md`: architecture, measured numbers table, real-vs-simulated table, the NUM_CLASSES bug story, lessons learned.
+- [x] `README.md`: quickstart, real-vs-simulated table, project structure, links to every doc.
+- [x] `scripts/demo_canary.sh`: one-shot script that resets the live cluster to v1, runs v1→v2 (promote) and v2→v3-bad (rollback), prints final deployment state. **Actually re-run as part of this phase** — reproduced the exact documented result (promote then rollback, stable left on v2 throughout).
 
-**Definition of Done:** someone unfamiliar with the project can read `docs/final_report.md` and `README.md` and understand exactly what's real, what's simulated, and why each engineering decision was made.
+**Definition of Done:** someone unfamiliar with the project can read `docs/final_report.md` and `README.md` and understand exactly what's real, what's simulated, and why each engineering decision was made. ✅ DONE.
 
 ---
 
