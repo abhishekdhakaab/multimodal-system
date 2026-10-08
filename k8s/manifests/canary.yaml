@@ -1,0 +1,57 @@
+# The canary deployment: a single replica that gets a new model version
+# first, on the same node type as production (standard canary practice --
+# testing on a different/weaker node type would confound "is the model bad"
+# with "is the hardware bad"). The controller patches MODEL_PATH/MODEL_VERSION
+# here, polls /accuracy, and only then decides whether to touch stable.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fenris-inference-canary
+  labels:
+    app: fenris-inference
+    track: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fenris-inference
+      track: canary
+  template:
+    metadata:
+      labels:
+        app: fenris-inference
+        track: canary
+    spec:
+      nodeSelector:
+        node-type: arm
+      containers:
+        - name: inference
+          image: fenris-inference:v1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MODEL_PATH
+              value: /app/model/checkpoints/model.pkl
+            - name: MODEL_VERSION
+              value: v1
+            - name: NODE_TYPE
+              value: arm
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fenris-inference-canary
+spec:
+  selector:
+    app: fenris-inference
+    track: canary
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -14,9 +14,14 @@ def init_params(key):
     }
 
 
-def forward(params, images, pointclouds):
-    """images: [B,32,32], pointclouds: [B,N,3] -> logits: [B, NUM_CLASSES]"""
-    vision_embed = vision_encoder.forward(params["vision"], images)
+def forward(params, images, pointclouds, backend="jax"):
+    """images: [B,IMAGE_SIZE,IMAGE_SIZE], pointclouds: [B,N,3] -> logits: [B, NUM_CLASSES]
+
+    backend: "jax" (runs anywhere) or "cuda_kernel" (vision encoder's core
+    attention runs through the hand-written CUDA kernel -- GPU only, see
+    edge/cuda_path/).
+    """
+    vision_embed = vision_encoder.forward(params["vision"], images, backend=backend)
     lidar_points = lidar_encoder.forward_per_point(params["lidar"], pointclouds)
     logits = fusion.forward(params["fusion"], vision_embed, lidar_points)
     return logits

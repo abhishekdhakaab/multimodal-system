@@ -87,13 +87,39 @@ def jax_softmax(x):
     return e / jnp.sum(e, axis=-1, keepdims=True)
 
 
+def _attention_cuda_kernel(x, block):
+    """Same math as _attention, but the core attention computation (the part
+    profiled as the bottleneck -- see docs/phase2_profiling_notes.md) runs
+    through the hand-written CUDA kernel from kernels/fused_attention.cu
+    instead of plain JAX ops. Only usable on a machine with a built
+    kernels/fused_attention.so (a CUDA GPU) -- see edge/cuda_path/."""
+    from kernels.register import fused_attention  # imported lazily: this module must
+    # still import cleanly on the M1, where kernels.register's ctypes.CDLL call would
+    # fail at import time if this were a top-level import
+
+    b, n, d = x.shape
+    qkv = x @ block["qkv"]
+    q, k, v = jnp.split(qkv, 3, axis=-1)
+
+    attn_out = fused_attention(q, k, v, NUM_HEADS)  # [B, N, D], core attention only
+    return attn_out @ block["out_proj"]
+
+
 def _mlp(x, block):
     h = jnp.maximum(x @ block["mlp_w1"] + block["mlp_b1"], 0.0)  # ReLU
     return h @ block["mlp_w2"] + block["mlp_b2"]
 
 
-def forward(params, images):
-    """images: [B, 32, 32] float32 in [0,1] -> embedding: [B, EMBED_DIM] (the CLS token output)"""
+def forward(params, images, backend="jax"):
+    """images: [B, IMAGE_SIZE, IMAGE_SIZE] float32 in [0,1] -> embedding: [B, EMBED_DIM] (the CLS token output)
+
+    backend: "jax" (default, runs anywhere, including the M1) or
+        "cuda_kernel" (uses the hand-written fused CUDA kernel for the core
+        attention computation -- only works on a machine with a built
+        kernels/fused_attention.so, see edge/cuda_path/).
+    """
+    attention_fn = _attention if backend == "jax" else _attention_cuda_kernel
+
     patches = _patchify(images)  # [B, NUM_PATCHES, patch_dim]
     x = patches @ params["patch_proj"]  # [B, NUM_PATCHES, EMBED_DIM]
     x = x + params["pos_embed"][None, :, :]
@@ -102,7 +128,7 @@ def forward(params, images):
     x = jnp.concatenate([cls, x], axis=1)  # [B, NUM_PATCHES+1, EMBED_DIM]
 
     for block in params["blocks"]:
-        attn_out = _attention(_layernorm(x, block["ln1_scale"], block["ln1_bias"]), block)
+        attn_out = attention_fn(_layernorm(x, block["ln1_scale"], block["ln1_bias"]), block)
         x = x + attn_out
         mlp_out = _mlp(_layernorm(x, block["ln2_scale"], block["ln2_bias"]), block)
         x = x + mlp_out
