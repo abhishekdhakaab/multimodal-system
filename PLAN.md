@@ -7,10 +7,10 @@
 ## STATUS
 
 ```
-Current phase: 2 (starting)
-Last completed task: Phase 1 complete — synthetic data generator (3000 examples, 4 balanced classes), shard builder (6 train + 1 val shard), hard_case_miner stub, 4/4 tests passing
-Next task: Phase 2, task 1 — model/vision_encoder.py (tiny ViT)
-Blockers: none
+Current phase: 3 (starting) — this is the first phase that requires a remote GPU (Colab), cannot proceed further on M1 alone
+Last completed task: Phase 2 complete — tiny ViT + PointNet lidar encoder + real cross-attention fusion, trained to 95.78% val accuracy (50 epochs, Adam, ~90s on M1 CPU), profiled: vision self-attention is the bottleneck (1.80ms/block), documented in docs/phase2_profiling_notes.md. 8/8 tests passing.
+Next task: Phase 3, task 1 — set up Colab notebook / sync workflow, write kernels/fused_op.cu for the self-attention fusion target
+Blockers: none yet, but Phase 3 needs the user to have a Google account for Colab (free tier) — confirm access before deep work starts
 Budget spent so far: $0.00 / $10.00
 Last updated: 2026-10-07
 ```
@@ -93,14 +93,14 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 ### Phase 2 — Baseline multimodal model (JAX, runs on M1 CPU)
 **Goal:** a small, real multimodal fusion model, trainable on M1 CPU (small enough to be feasible without a GPU).
 
-- [ ] `model/vision_encoder.py`: tiny ViT (2-3 transformer blocks, small patch count — a few hundred thousand params at most, this is CPU training on small images).
-- [ ] `model/lidar_encoder.py`: simple point-cloud encoder (PointNet-style: per-point MLP + max-pool — avoid anything requiring custom CUDA at this stage).
-- [ ] `model/fusion.py`: one cross-attention layer fusing the two encoder outputs + a small linear classification head (task: predict the shape class from image+pointcloud together — single-label classification, not detection/regression, to keep scope small).
-- [ ] `model/train.py`: training loop on shards from Phase 1, runs on CPU, checkpoint saving.
-- [ ] Train to a sane, reported-honestly accuracy number (not SOTA — just real and measured).
-- [ ] `model/profile.py`: use `jax.profiler` to trace one forward pass, dump the trace, identify the single most expensive op/op-group. **Write down what it is and why — this decision feeds Phase 3 directly.**
+- [x] `model/vision_encoder.py`: tiny ViT (2 transformer blocks, 4x4 patches, embed dim 48 — small, CPU-trainable).
+- [x] `model/lidar_encoder.py`: simple point-cloud encoder (PointNet-style: per-point MLP + max-pool for a pooled embedding, plus `forward_per_point` exposing per-point features used as cross-attention tokens).
+- [x] `model/fusion.py`: real multi-token cross-attention (vision CLS embedding as query, lidar per-point features as keys/values) + linear classification head (4-class shape classification).
+- [x] `model/train.py`: training loop on shards from Phase 1, Adam optimizer (hand-written, no optax dependency), runs on CPU, checkpoint saving.
+- [x] Train to a sane, reported-honestly accuracy number — **95.78% val accuracy**, 50 epochs, ~90s total on M1 CPU.
+- [x] `model/profile.py`: profiled forward pass (JIT, warmup-excluded timing), identified the bottleneck. **Documented in `docs/phase2_profiling_notes.md`.**
 
-**Definition of Done:** model trains end-to-end on M1 CPU for at least a few epochs, produces a checkpoint, and `model/profile.py` outputs a clear bottleneck finding documented in `docs/phase2_profiling_notes.md`.
+**Definition of Done:** model trains end-to-end on M1 CPU for at least a few epochs, produces a checkpoint, and `model/profile.py` outputs a clear bottleneck finding documented in `docs/phase2_profiling_notes.md`. ✅ DONE — vision encoder is 88.7% of forward-pass time; within it, self-attention (QKV+softmax+out-proj) is 1.80ms/block vs 0.84ms for the MLP, the clear fusion target for Phase 3. 8/8 tests passing (4 model, 4 data pipeline).
 
 ---
 
