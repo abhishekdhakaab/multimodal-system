@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 data_pipeline/generated/
 data_pipeline/shards/
+data_pipeline/raw/
 model/checkpoints/
 *.npz
+*.so
 .DS_Store

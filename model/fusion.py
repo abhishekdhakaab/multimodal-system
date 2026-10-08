@@ -12,9 +12,13 @@ from jax import random
 
 from model.vision_encoder import EMBED_DIM as VISION_DIM
 from model.lidar_encoder import EMBED_DIM as LIDAR_DIM
+from data_pipeline.modelnet_loader import CLASSES
 
 FUSION_DIM = 48
-NUM_CLASSES = 4
+NUM_CLASSES = len(CLASSES)  # single source of truth -- this used to be a hardcoded 4,
+# a leftover from the old synthetic-shapes dataset, which silently capped the model's
+# output head at 4 of ModelNet10's 10 classes and was the real cause of the fused
+# model badly underperforming single-modality ablations (see docs/fusion_bug_notes.md)
 
 assert VISION_DIM == LIDAR_DIM == FUSION_DIM, "encoder dims must match for this simple fusion"
 

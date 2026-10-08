@@ -10,8 +10,10 @@ import jax
 import jax.numpy as jnp
 from jax import random
 
+from data_pipeline.modelnet_loader import NUM_POINTS
 from model import vision_encoder, lidar_encoder, fusion
 from model.full_model import forward, init_params
+from model.vision_encoder import IMAGE_SIZE
 
 BATCH_SIZE = 64
 N_TIMING_RUNS = 50
@@ -33,8 +35,8 @@ def time_fn(fn, *args, n=N_TIMING_RUNS):
 def main():
     key = random.PRNGKey(0)
     params = init_params(key)
-    images = jnp.zeros((BATCH_SIZE, 32, 32))
-    points = jnp.zeros((BATCH_SIZE, 64, 3))
+    images = jnp.zeros((BATCH_SIZE, IMAGE_SIZE, IMAGE_SIZE))
+    points = jnp.zeros((BATCH_SIZE, NUM_POINTS, 3))
 
     full_fn = jax.jit(forward)
     full_time = time_fn(full_fn, params, images, points)

@@ -9,8 +9,8 @@ import jax.numpy as jnp
 from jax import random
 
 PATCH_SIZE = 4
-IMAGE_SIZE = 32
-NUM_PATCHES = (IMAGE_SIZE // PATCH_SIZE) ** 2  # 64
+IMAGE_SIZE = 40  # must match data_pipeline.modelnet_loader.IMAGE_SIZE
+NUM_PATCHES = (IMAGE_SIZE // PATCH_SIZE) ** 2  # 100
 EMBED_DIM = 48
 NUM_HEADS = 4
 NUM_LAYERS = 2
