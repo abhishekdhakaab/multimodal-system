@@ -7,9 +7,9 @@
 ## STATUS
 
 ```
-Current phase: 0 (not started)
-Last completed task: none
-Next task: Phase 0, task 1
+Current phase: 2 (starting)
+Last completed task: Phase 1 complete — synthetic data generator (3000 examples, 4 balanced classes), shard builder (6 train + 1 val shard), hard_case_miner stub, 4/4 tests passing
+Next task: Phase 2, task 1 — model/vision_encoder.py (tiny ViT)
 Blockers: none
 Budget spent so far: $0.00 / $10.00
 Last updated: 2026-10-07
@@ -69,24 +69,24 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 ### Phase 0 — Environment & scaffold
 **Goal:** project skeleton, dependencies installable on M1.
 
-- [ ] Set up Python env (venv) on M1 with: `jax` (CPU backend), `numpy`, `pillow` (for drawing synthetic images), `pytest`.
-- [ ] Write `scripts/setup_env.sh` that reproduces the env from scratch.
-- [ ] Write `.gitignore` (venv, checkpoints, __pycache__, generated data/shards).
-- [ ] `git init` the project, first commit.
+- [x] Set up Python env (venv) on M1 with: `jax` (CPU backend), `numpy`, `pillow` (for drawing synthetic images), `pytest`.
+- [x] Write `scripts/setup_env.sh` that reproduces the env from scratch.
+- [x] Write `.gitignore` (venv, checkpoints, __pycache__, generated data/shards).
+- [x] `git init` the project, first commit.
 
-**Definition of Done:** `python -c "import jax; print(jax.devices())"` runs on M1 without error.
+**Definition of Done:** `python -c "import jax; print(jax.devices())"` runs on M1 without error. ✅ DONE — jax 0.11.2, `[CpuDevice(id=0)]`.
 
 ---
 
 ### Phase 1 — Data pipeline (synthetic multimodal data)
 **Goal:** generate a small synthetic multimodal dataset and turn it into training shards, plus a hard-case mining script (used later, in Phase 7).
 
-- [ ] `data_pipeline/generate.py`: for each of 4 shape classes (circle, square, triangle, star), generate (a) a small 2D rendered image ("camera") with random position/rotation/noise, and (b) a 3D point cloud sampled from that shape's surface with random rotation/noise ("lidar"). Save a few thousand examples total — this is intentionally small.
-- [ ] `data_pipeline/build_shards.py`: write (image, pointcloud, label) tuples to disk shards as simple `.npz` files — no need for a real distributed format at this scale.
-- [ ] `data_pipeline/hard_case_miner.py`: stub now, filled in during Phase 7 — given model predictions + confidence scores, flag low-confidence examples. Write the interface now so Phase 2's model output shape matches what this expects.
-- [ ] Basic test: `pytest data_pipeline/tests/` — shard round-trip (write then read back, shapes match) and a sanity check that each class's generated examples look visually distinct.
+- [x] `data_pipeline/generate.py`: for each of 4 shape classes (circle, square, triangle, star), generate (a) a small 2D rendered image ("camera") with random position/rotation/noise, and (b) a 3D point cloud sampled from that shape's surface with random rotation/noise ("lidar"). Save a few thousand examples total — this is intentionally small.
+- [x] `data_pipeline/build_shards.py`: write (image, pointcloud, label) tuples to disk shards as simple `.npz` files — no need for a real distributed format at this scale.
+- [x] `data_pipeline/hard_case_miner.py`: stub now, filled in during Phase 7 — given model predictions + confidence scores, flag low-confidence examples. Write the interface now so Phase 2's model output shape matches what this expects.
+- [x] Basic test: `pytest data_pipeline/tests/` — shard round-trip (write then read back, shapes match) and a sanity check that each class's generated examples look visually distinct.
 
-**Definition of Done:** running `python data_pipeline/generate.py && python data_pipeline/build_shards.py` produces N shards in `data_pipeline/shards/`, and a small script can load one shard and print tensor shapes.
+**Definition of Done:** running `python data_pipeline/generate.py && python data_pipeline/build_shards.py` produces N shards in `data_pipeline/shards/`, and a small script can load one shard and print tensor shapes. ✅ DONE — 3000 examples generated (750/class, balanced), 6 train shards + 1 val shard, 4/4 pytest tests pass. Sample star image visually confirmed correct.
 
 ---
 
