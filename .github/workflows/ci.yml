@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        run: |
+          python -m pytest \
+            data_pipeline/tests/ \
+            model/tests/ \
+            kernels/tests/ \
+            edge/tests/ \
+            k8s/tests/ \
+            scripts/tests/ \
+            -v
+
+      # Tests requiring local-only artifacts (real training shards, trained
+      # checkpoints, a live Kubernetes cluster, a built CUDA kernel) skip
+      # gracefully rather than failing -- see each test file's skipif
+      # conditions. This CI run covers everything that's genuinely testable
+      # without those: model architecture shapes/logic, the data pipeline's
+      # parsing/sampling math, kernel algorithm verification against a
+      # reference, and the K8s controller's pure logic (patch construction).

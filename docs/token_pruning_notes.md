@@ -28,6 +28,14 @@ carry no information on average, that's a real, exploitable structural
 property of this specific pipeline, not a generic assumption borrowed from
 an LLM paper.
 
+## What it actually looks like
+
+`model/visualize_pruning.py` renders real validation images with kept
+(clear) vs. pruned (dimmed red) patches overlaid — see `docs/images/`.
+Across every example checked, the kept patches concentrate tightly on
+the actual object silhouette and the pruned patches are the background —
+exactly the property measured numerically above, now visible directly.
+
 ## The approach
 
 `model/vision_encoder.py`'s `_select_top_k_patches`: rank patches by total

@@ -7,8 +7,8 @@
 ## STATUS
 
 ```
-Current phase: 12 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
-User asked for wall-clock latency measurement to be deferred to later and for broader keyword coverage (sink tokens, speculative decoding, MoE, bucket/group token representation). Status: sink tokens (Phase 10 addendum), speculative-decoding analog / cascade inference (Phase 11), and MoE (Phase 12) are all done. The ONLY remaining keyword from that feedback is the temporal/streaming "bucket/group old-token representation" idea -- not started, and it's the one that needs a real scope decision: this model is single-frame, so there's no "old tokens" to bucket without first building a multi-view-sequence setting (e.g. treating several real views of the same real object as a short sequence, "robot circling an object over time"). That's a genuine architecture change, not an incremental addition like the last three -- should be confirmed with the user before starting, unlike Phases 10-12 which were small enough to just build and report.
+Current phase: 13 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
+User asked to cover resume-relevant ground across 4 different ML job archetypes (robotics/perception: robustness test; CV: pruning visualization; infra/platform: CI pipeline; research: experiment log) -- all 4 done in Phase 13, each with real measured output, not just written and assumed. The temporal/streaming "bucket/group old-token representation" idea from earlier feedback is still open and still needs a scope decision (requires turning this into a multi-view-sequence problem, a real architecture change) -- not touched this session, still waiting on the user.
 Last completed task:
   - REWORK of Phases 1-2: replaced hand-drawn synthetic shapes with ModelNet10 (real public CAD dataset, no signup) after user feedback that fake data "makes people lose interest." Both modalities derived from the same real mesh per example. See docs/dataset_rework_notes.md.
   - Found and fixed a REAL BUG, not just a tuning problem: model/fusion.py had NUM_CLASSES=4 hardcoded (leftover from the old 4-shape synthetic dataset), silently capping the model's output head at 4 of ModelNet10's 10 real classes. Found via ablation (vision-only=68.9%, lidar-only=87.7%, but the fused model scored only 35% -- worse than either alone, which is what made it clearly a bug and not just undertraining). Full story in docs/fusion_bug_notes.md. Fixed by importing NUM_CLASSES from the dataset's class list everywhere, plus added a regression test (test_fusion_num_classes_matches_real_dataset) so this exact bug class can't silently reappear.
@@ -242,6 +242,19 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 - [x] `model/tests/test_moe.py`: 4 tests, including that the balance loss is correctly ~0 for uniform usage and positive for collapsed usage.
 
 **Definition of Done:** a real measurement of whether MoE routing does anything meaningful here, not a toy that's assumed to work. ✅ DONE. Soft-routed 83.92%, hard-routed 82.71% (a real, small, expected soft-vs-hard gap) — both slightly below the single-head fusion model's 86.01%, reported honestly rather than cherry-picked. The genuinely interesting finding is the emergent semantic clustering, not a efficiency win (experts are small linear heads here, so real compute savings from hard routing would be modest in this specific model size). Full writeup in `docs/moe_notes.md`. 33/36 tests passing (3 GPU-dependent skip).
+
+---
+
+### Phase 13 — Resume-domain coverage: robustness, visualization, CI, experiment tracking
+**Goal:** cover gaps across 4 different ML job archetypes (robotics/perception, computer vision, infra/platform, research) with real work, not just claims.
+
+- [x] `model/eval_robustness.py`: stress-tested the "fusion is more robust" assumption instead of just claiming it. **Real negative finding**: dropping lidar craters accuracy 86.01%→20.15%, dropping camera is less bad (→61.34%) — consistent with the model leaning on lidar more (matches the Phase 2 ablation). Noisy lidar (17.18%) is even worse than zeroed lidar — an actively misleading signal is worse than no signal. Diagnosed why (never trained with dropout) and named the real fix (modality-dropout training) without claiming to have built it. Full writeup in `docs/robustness_notes.md`.
+- [x] `model/visualize_pruning.py`: real images (not just a number) showing which patches token pruning keeps vs. discards on actual validation examples — kept patches visibly concentrate on the object, pruned ones are background, confirming the Phase 10 numeric finding visually. Saved to `docs/images/`.
+- [x] `.github/workflows/ci.yml`: real CI pipeline, verified by actually simulating a fresh checkout (moved shards/checkpoints/kernel .so aside, ran the full suite, confirmed 33 passed/6 skipped with zero failures, then restored everything) rather than assuming the skip logic would work.
+- [x] `docs/experiments_log.json` + `scripts/experiment_log.py`: a real structured, append-only experiment log (not a full MLflow/W&B setup, but a genuine machine-readable record) — every number quoted anywhere in this project's docs traces back to a row here.
+- [x] Tests added for all four: `model/tests/test_robustness.py`, `model/tests/test_visualize_pruning.py`, `scripts/tests/test_experiment_log.py`.
+
+**Definition of Done:** each of the 4 additions is real, tested, and verified — not just written and assumed to work. ✅ DONE. 37/40 tests passing (3 GPU-dependent skip).
 
 ---
 

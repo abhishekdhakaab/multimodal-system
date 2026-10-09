@@ -1,0 +1,122 @@
+[
+  {
+    "phase": 2,
+    "experiment": "Baseline multimodal fusion model",
+    "change": "Tiny ViT + PointNet-style encoder + cross-attention fusion, trained from scratch",
+    "metric": "val_accuracy",
+    "result": 0.8601,
+    "notes": "After fixing the NUM_CLASSES bug (see fusion_bug_notes.md); original buggy run scored 0.351"
+  },
+  {
+    "phase": 2,
+    "experiment": "Single-modality ablation: vision only",
+    "change": "Vision encoder + linear head, no lidar",
+    "metric": "val_accuracy",
+    "result": 0.689,
+    "notes": "Used to localize the NUM_CLASSES bug: fused model scoring below this was the signal"
+  },
+  {
+    "phase": 2,
+    "experiment": "Single-modality ablation: lidar only",
+    "change": "Lidar encoder + linear head, no vision",
+    "metric": "val_accuracy",
+    "result": 0.877,
+    "notes": "Model relies more heavily on lidar than vision -- confirmed later by robustness testing"
+  },
+  {
+    "phase": 9,
+    "experiment": "Zero-shot classification, raw",
+    "change": "DeViSE-style embedding-matching head, 2 classes held out entirely from training",
+    "metric": "zero_shot_accuracy",
+    "result": 0.0058,
+    "notes": "Below the 10% random baseline -- diagnosed as seen-class bias (hubness), not a bug"
+  },
+  {
+    "phase": 9,
+    "experiment": "Zero-shot classification, calibrated stacking correction",
+    "change": "Subtract a scalar from seen-class scores before argmax (Chao et al. 2016)",
+    "metric": "zero_shot_accuracy",
+    "result": 0.2442,
+    "notes": "Ceiling at gamma>=8, but seen-class accuracy collapses to ~0% at that point -- not a free win"
+  },
+  {
+    "phase": 10,
+    "experiment": "Content-adaptive token pruning, post-hoc (no retraining)",
+    "change": "prune_k=50 applied to the checkpoint trained without pruning",
+    "metric": "val_accuracy",
+    "result": 0.7159,
+    "notes": "Steep drop -- model's statistics never adapted to the smaller token budget"
+  },
+  {
+    "phase": 10,
+    "experiment": "Content-adaptive token pruning, fine-tuned",
+    "change": "15 epochs of fine-tuning with prune_k=50 enabled",
+    "metric": "val_accuracy",
+    "result": 0.8095,
+    "notes": "2.65x fewer attention-block FLOPs for a 5.06-point accuracy cost"
+  },
+  {
+    "phase": 10,
+    "experiment": "Token pruning + sink tokens",
+    "change": "4 fixed corner patches always kept, same k=50 budget",
+    "metric": "val_accuracy",
+    "result": 0.8194,
+    "notes": "+0.99 points over pure content-ranked pruning, tested not assumed"
+  },
+  {
+    "phase": 11,
+    "experiment": "Draft classifier",
+    "change": "14 hand-computed global stats, no attention, 2-layer MLP",
+    "metric": "val_accuracy",
+    "result": 0.6465,
+    "notes": "~1,982x cheaper than the full model (6,272 vs 12,432,768 FLOPs/example)"
+  },
+  {
+    "phase": 11,
+    "experiment": "Draft-then-escalate cascade, threshold=0.8",
+    "change": "Escalate to full model only when draft confidence < 0.8",
+    "metric": "cascade_accuracy",
+    "result": 0.8524,
+    "notes": "24.3% of inputs resolved by the draft alone, ~1.32x avg-case compute saving"
+  },
+  {
+    "phase": 12,
+    "experiment": "Mixture-of-Experts, soft routing",
+    "change": "3 expert heads + gate, trained with load-balancing loss",
+    "metric": "val_accuracy",
+    "result": 0.8392,
+    "notes": "Below the single-head model (0.8601) -- reported honestly, not cherry-picked"
+  },
+  {
+    "phase": 12,
+    "experiment": "Mixture-of-Experts, hard routing (real sparse inference)",
+    "change": "Top-1 expert only, same trained model as above",
+    "metric": "val_accuracy",
+    "result": 0.8271,
+    "notes": "Gate specialized by real furniture semantic category, unsupervised"
+  },
+  {
+    "phase": 12,
+    "experiment": "Mixture-of-Experts, no load-balancing loss (ablation)",
+    "change": "Same setup, load_balance_coef=0",
+    "metric": "val_accuracy",
+    "result": 0.8282,
+    "notes": "Usage stayed balanced (39/30/31%) without the loss too -- the mechanism wasn't load-bearing here"
+  },
+  {
+    "phase": "robustness",
+    "experiment": "Sensor failure: lidar dropped",
+    "change": "Lidar input zeroed at inference, same trained checkpoint",
+    "metric": "val_accuracy",
+    "result": 0.2015,
+    "notes": "Catastrophic -- fusion is not robust to sensor dropout without modality-dropout training"
+  },
+  {
+    "phase": "robustness",
+    "experiment": "Sensor failure: camera dropped",
+    "change": "Camera input zeroed at inference, same trained checkpoint",
+    "metric": "val_accuracy",
+    "result": 0.6134,
+    "notes": "Less catastrophic than losing lidar, consistent with the lidar-only ablation being stronger"
+  }
+]

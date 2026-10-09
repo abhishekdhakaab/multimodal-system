@@ -38,6 +38,7 @@ Colab session for the GPU-dependent pieces.
 | Content-adaptive token pruning | Measured 53% of patches are near-empty (task-specific structure); fine-tuned with 50% tokens pruned: **80.95% accuracy (-5.06pts), ~2.65x fewer attention FLOPs**; +sink tokens: 81.94% (-4.07pts) |
 | Draft-then-escalate cascade | Cheap draft (~1,982x fewer FLOPs, 64.65% accuracy) escalates to the full model when unsure; at threshold=0.8: **24.3% of inputs resolved by the draft alone, 85.24% cascade accuracy (-0.77pts), ~1.32x avg-case compute saving** |
 | Mixture-of-Experts head | 3 experts, soft-trained/hard-evaluated: 83.92%/82.71% accuracy; **gate learned real semantic clustering (seating vs bedroom/bath vs desk furniture) unsupervised**; load-balancing loss tested, found not actually necessary here |
+| Sensor-failure robustness | Dropping lidar: 86.01%→20.15% (catastrophic); dropping camera: →61.34% (less bad); **noisy lidar (17.18%) is worse than zeroed lidar** — fusion does NOT give free robustness here, diagnosed why |
 
 ## 4. What's real vs. honestly simulated
 
@@ -181,6 +182,26 @@ Accuracy (82.71-83.92%) is honestly below the single-head model's
 86.01% — three smaller heads didn't beat one well-tuned head here,
 reported plainly rather than cherry-picking the better of soft/hard to
 make the section look stronger than it is.
+
+## 5f. Sensor-failure robustness — testing the assumption that fusion helps
+
+Multimodal fusion is often assumed to be more robust than any single
+sensor ("if the camera fails, lidar carries you"). Never actually tested
+until this pass. Zeroed/corrupted each modality independently at
+inference and measured the real cost:
+
+Dropping lidar is catastrophic (86.01%→20.15%); dropping the camera is
+less bad (→61.34%) — consistent with the earlier single-modality
+ablation, where lidar-alone (87.7%) outperformed vision-alone (68.9%):
+the model leans on lidar more, so losing it costs more. The genuinely
+surprising part: **noisy lidar (17.18%) is worse than zeroed lidar
+(20.15%)** — a corrupted signal actively misleads the model more than a
+clearly-absent one, while for the camera the opposite holds (noise hurts
+less than zeroing, since silhouette contrast partially survives additive
+noise). Diagnosed why: the model was never trained with a dropped or
+corrupted modality, so it had no reason to learn a fallback. The real
+fix (modality-dropout training) is named but not built — reported as a
+next step, not claimed as done.
 
 ## 6. Lessons
 
