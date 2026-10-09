@@ -5,6 +5,7 @@ Kept intentionally small (a few hundred thousand params) since this trains
 on M1 CPU: 4x4 patches -> 64 patches, small embed dim, 2 transformer blocks.
 """
 
+import jax
 import jax.numpy as jnp
 from jax import random
 
@@ -63,6 +64,32 @@ def _patchify(images):
     return x
 
 
+def _select_top_k_patches(patches, k):
+    """patches: [B, NUM_PATCHES, patch_dim] -> (selected: [B, k, patch_dim], indices: [B, k])
+
+    Content-adaptive token pruning: on this project's data (silhouettes
+    rendered from sparse point-cloud projections, see
+    data_pipeline/modelnet_loader.project_to_image), roughly half of all
+    patches are near-empty background on average -- measured directly on
+    the real training data, not assumed. Self-attention cost is O(N^2) in
+    token count, so running it over a fixed, smaller budget of the most
+    "informative" patches (by total pixel intensity -- a direct, cheap
+    proxy for "this patch contains part of the object, not background")
+    instead of all NUM_PATCHES is a real, content-driven compute reduction
+    specific to this kind of sparse-render input, not a generic trick
+    applied without looking at the data. See docs/token_pruning_notes.md
+    for the measured accuracy/latency tradeoff.
+
+    k is fixed across the batch (not a per-example dynamic count) so this
+    stays a static shape under jax.jit -- which patches are chosen still
+    varies per example, only the COUNT is fixed.
+    """
+    importance = jnp.sum(patches, axis=-1)  # [B, NUM_PATCHES], total intensity per patch
+    _, top_idx = jax.lax.top_k(importance, k)  # [B, k]
+    selected = jnp.take_along_axis(patches, top_idx[:, :, None], axis=1)  # [B, k, patch_dim]
+    return selected, top_idx
+
+
 def _attention(x, block):
     b, n, d = x.shape
     qkv = x @ block["qkv"]  # [B, N, 3D]
@@ -110,22 +137,37 @@ def _mlp(x, block):
     return h @ block["mlp_w2"] + block["mlp_b2"]
 
 
-def forward(params, images, backend="jax"):
+def forward(params, images, backend="jax", prune_k=None):
     """images: [B, IMAGE_SIZE, IMAGE_SIZE] float32 in [0,1] -> embedding: [B, EMBED_DIM] (the CLS token output)
 
     backend: "jax" (default, runs anywhere, including the M1) or
         "cuda_kernel" (uses the hand-written fused CUDA kernel for the core
         attention computation -- only works on a machine with a built
         kernels/fused_attention.so, see edge/cuda_path/).
+    prune_k: if set, runs attention over only the top-k most "informative"
+        patches (by pixel intensity) instead of all NUM_PATCHES -- see
+        _select_top_k_patches's docstring and docs/token_pruning_notes.md.
+        None (default) uses every patch, unchanged from the original model.
     """
     attention_fn = _attention if backend == "jax" else _attention_cuda_kernel
 
     patches = _patchify(images)  # [B, NUM_PATCHES, patch_dim]
-    x = patches @ params["patch_proj"]  # [B, NUM_PATCHES, EMBED_DIM]
-    x = x + params["pos_embed"][None, :, :]
+
+    if prune_k is not None:
+        patches, patch_idx = _select_top_k_patches(patches, prune_k)
+        pos_embed = jnp.take_along_axis(
+            jnp.broadcast_to(params["pos_embed"][None, :, :], (images.shape[0], NUM_PATCHES, EMBED_DIM)),
+            patch_idx[:, :, None],
+            axis=1,
+        )  # [B, k, EMBED_DIM], gathered to match the selected patches
+    else:
+        pos_embed = params["pos_embed"][None, :, :]
+
+    x = patches @ params["patch_proj"]  # [B, k_or_NUM_PATCHES, EMBED_DIM]
+    x = x + pos_embed
 
     cls = jnp.broadcast_to(params["cls_token"], (x.shape[0], 1, EMBED_DIM))
-    x = jnp.concatenate([cls, x], axis=1)  # [B, NUM_PATCHES+1, EMBED_DIM]
+    x = jnp.concatenate([cls, x], axis=1)  # [B, (k_or_NUM_PATCHES)+1, EMBED_DIM]
 
     for block in params["blocks"]:
         attn_out = attention_fn(_layernorm(x, block["ln1_scale"], block["ln1_bias"]), block)
