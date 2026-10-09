@@ -2,16 +2,17 @@
 JAX-side registration of the custom CUDA kernel as a real JAX primitive,
 usable inside jit like any other op.
 
-HONESTY NOTE (same as custom_call.cpp): JAX's custom-call/FFI API has moved
-across versions. This targets `jax.extend.ffi`, the modern documented path
-for registering a custom call. It has NOT been run (no CUDA on this
-machine) -- this is the first thing to debug on Colab. If `jax.extend.ffi`
-doesn't match the installed JAX version's exact API, the fallback is the
-older `jax.lib.xla_client.register_custom_call_target` +
-`jax.lax.custom_call` /  manual XLA custom-call lowering, which is more
-verbose but has been stable for longer. Both custom_call.cpp's exposed
-symbol and this file assume the "opaque buffers" ABI described in
-custom_call.cpp's comments.
+UPDATE (first real Colab run, JAX 0.11.1): `jax.extend.ffi` no longer
+exists -- confirmed via `hasattr(jax, "extend")` -> False on the actual
+Colab environment. The FFI API was promoted out of the experimental
+`jax.extend` namespace to a stable top-level `jax.ffi` module, same
+function names (`register_ffi_target`, `ffi_call`), just a shorter path.
+This file now targets `jax.ffi` directly. If `ffi_call`'s exact keyword
+arguments (e.g. `opaque=`) don't match this JAX version either, check
+`help(jax.ffi.ffi_call)` in the Colab session -- the module path was the
+first and most likely mismatch, but the call signature itself may have
+also shifted. Both custom_call.cpp's exposed symbol and this file assume
+the "opaque buffers" ABI described in custom_call.cpp's comments.
 
 Build step (run on Colab, not here):
     nvcc -shared -Xcompiler -fPIC \
@@ -46,11 +47,7 @@ def _ensure_registered():
         getattr(lib, "FusedAttentionCustomCall"), ctypes.c_void_p
     )
 
-    # modern path: jax.extend.ffi.register_ffi_target.
-    # if this errors on the installed JAX version, fall back to:
-    #   from jax.lib import xla_client
-    #   xla_client.register_custom_call_target("fused_attention", target_capsule, platform="gpu")
-    jax.extend.ffi.register_ffi_target(
+    jax.ffi.register_ffi_target(
         "fused_attention", target_capsule, platform="gpu"
     )
     _registered = True
@@ -83,7 +80,7 @@ def fused_attention(q, k, v, num_heads):
 
     opaque = struct.pack("iiii", b, num_heads, n, head_dim)
 
-    out_heads = jax.extend.ffi.ffi_call(
+    out_heads = jax.ffi.ffi_call(
         "fused_attention",
         jax.ShapeDtypeStruct(q_heads.shape, q_heads.dtype),
         q_heads,
