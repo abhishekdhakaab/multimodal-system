@@ -2,49 +2,29 @@
 JAX-side registration of the custom CUDA kernel as a real JAX primitive,
 usable inside jit like any other op.
 
-UPDATE 3: the api_version=1 "legacy" ABI (two versions ago) is NOT
-supported by this jaxlib/CUDA-plugin build at all -- confirmed by JAX's
-OWN internal plugin init hitting the identical "Unsupported custom call
-target type for api_version=1" error independent of our code. Rewrote
-custom_call.cpp to the modern typed-FFI handler convention (api_version=4).
+REVERTED after a long real debugging arc on jaxlib 0.11.1 (Colab's
+default version): that build's CUDA plugin doesn't support the legacy
+ABI this kernel uses, so a modern typed-FFI rewrite was tried -- it
+compiled and registered without any error, through two different
+registration functions, but was never actually reachable at execution
+time (`NOT_FOUND: No FFI handler registered for fused_attention`),
+looking like a PJRT-plugin registry isolation issue specific to that
+very recent build, not a glue-code mistake.
 
-UPDATE 4: the first typed-FFI attempt used `XLA_FFI_REGISTER_HANDLER`
-for C++-side static self-registration, which failed to LINK (undefined
-symbol `xla::ffi::GetXlaFfiApi`) -- that macro needs the full XLA
-runtime linked in, which isn't available in pip-distributed jaxlib.
-Read xla/ffi/api/api.h directly on Colab (rather than guessing a third
-time) and found the right tool already documented there:
-`XLA_FFI_DEFINE_HANDLER_SYMBOL`, explicitly "for users who want to
-export XLA FFI handler from a shared library as a C function symbol" --
-exactly this situation. custom_call.cpp now exports a plain `extern "C"`
-function; this file grabs it via ctypes and registers it from Python
-with `jax.ffi.register_ffi_target(..., api_version=4)` instead of
-relying on static self-registration.
+Pinning jax/jaxlib==0.4.34 sidesteps the whole problem: confirmed on
+that version that `jax.ffi` doesn't exist (it's `jax.extend.ffi`), and
+the FFI C++ header bundling needed for the typed-FFI approach isn't
+available there either -- so the simple, long-established legacy ABI
+(custom_call.cpp, reverted alongside this file) is the right one here.
 
-The `num_heads` attribute is passed as a keyword argument on the INNER
-call (the callable `ffi_call(...)` returns), matching
-`.Attr<int32_t>("num_heads")` in custom_call.cpp's binding.
+HONEST UNCERTAINTY: whether `jax.extend.ffi.ffi_call` at this version
+takes operands directly (single call) or returns a builder (two-stage,
+like the newer `jax.ffi.ffi_call` turned out to) was not independently
+verified before writing this -- both patterns are tried below, in order,
+so this doesn't cost another round-trip if the first guess is wrong.
 
-UPDATE 5: with registration reaching XLA cleanly, the real error became
-`No FFI handler registered for fused_attention on a platform CUDA
-(canonical cuda)` -- XLA prints both the platform string we passed and
-its "canonical" (lowercased) form, implying our registration under
-`platform="CUDA"` and the dispatch-time lookup (on the canonicalized key)
-never matched. Changed to `platform="cuda"` (lowercase).
-
-KNOWN HARMLESS NOISE: every run also logs an ERROR from
-`jax_plugins.xla_cuda13.initialize()` about "Unsupported custom call
-target type" / "API version ... not supported" during lazy CUDA backend
-init. This is JAX's own internal plugin registering ITS OWN handlers
-(not "fused_attention"), unrelated to our registration -- confirmed
-because it fires with contradictory complaints across different runs
-(first said api_version=1 unsupported, then said api_version=4
-unsupported, for internal calls we don't control) and never correlates
-with whether our own tests pass or fail. Safe to ignore.
-
-Build step (run on Colab, not here -- needs the FFI header path):
-    nvcc -shared -Xcompiler -fPIC -arch=sm_75 -std=c++17 \
-        -I$(python3 -c "import jax.ffi; print(jax.ffi.include_dir())") \
+Build step (run on Colab, not here):
+    nvcc -shared -Xcompiler -fPIC -arch=sm_75 \
         kernels/fused_attention.cu kernels/custom_call.cpp \
         -o kernels/fused_attention.so
 """
@@ -71,10 +51,12 @@ def _ensure_registered():
         )
 
     lib = ctypes.CDLL(SO_PATH)
-    handler_fn = getattr(lib, "FusedAttentionHandler")
-    capsule = jax.ffi.pycapsule(handler_fn)
-    jax.ffi.register_ffi_target(
-        "fused_attention", capsule, platform="cuda", api_version=4
+    target_capsule = ctypes.cast(
+        getattr(lib, "FusedAttentionCustomCall"), ctypes.c_void_p
+    )
+
+    jax.extend.ffi.register_ffi_target(
+        "fused_attention", target_capsule, platform="gpu", api_version=1
     )
     _registered = True
 
@@ -104,10 +86,30 @@ def fused_attention(q, k, v, num_heads):
     k_heads = split_heads(k)
     v_heads = split_heads(v)
 
-    call = jax.ffi.ffi_call(
-        "fused_attention",
-        jax.ShapeDtypeStruct(q_heads.shape, q_heads.dtype),
-    )
-    out_heads = call(q_heads, k_heads, v_heads, num_heads=num_heads)
+    opaque = f"{b} {num_heads} {n} {head_dim}"
+    result_type = jax.ShapeDtypeStruct(q_heads.shape, q_heads.dtype)
+
+    try:
+        # guess 1: single-stage call, operands passed directly (matches the
+        # ORIGINAL pre-Colab assumption for this older namespace)
+        out_heads = jax.extend.ffi.ffi_call(
+            "fused_attention",
+            result_type,
+            q_heads,
+            k_heads,
+            v_heads,
+            custom_call_api_version=1,
+            legacy_backend_config=opaque,
+        )
+    except TypeError:
+        # guess 2: two-stage call (builder then call), matching the pattern
+        # the newer jax.ffi.ffi_call turned out to use
+        call = jax.extend.ffi.ffi_call(
+            "fused_attention",
+            result_type,
+            custom_call_api_version=1,
+            legacy_backend_config=opaque,
+        )
+        out_heads = call(q_heads, k_heads, v_heads)
 
     return out_heads.transpose(0, 2, 1, 3).reshape(b, n, d)

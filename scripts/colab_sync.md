@@ -1,18 +1,37 @@
 # Running Phase 3 on Google Colab
 
 Everything in `kernels/` was originally written on the M1 (no CUDA available
-there), and the sections below were written blind, before ever running on
-real hardware. **Updated after the actual first Colab run** — the real
-errors hit, and the real fixes, are recorded here instead of the original
-guesses, so this doc now reflects what's actually true rather than what
-seemed plausible beforehand.
+there). **Updated repeatedly after real Colab runs** — the real errors hit,
+and the real fixes, are recorded here instead of the original blind guesses.
 
-## 1. Get the code onto Colab
+## The short version
+
+Colab's **default** jaxlib (0.11.1 as of this writing) ships CUDA support
+through a separate PJRT plugin that — after 6 real, confirmed debugging
+rounds — turned out to have a custom-call registration/execution mismatch
+that couldn't be resolved from the Python/C++ glue side (registration
+"succeeds" with zero errors through two different registration functions,
+but the handler is never actually reachable at execution: `NOT_FOUND: No
+FFI handler registered`). **The fix was pinning an older, well-established
+jax/jaxlib version (0.4.34)** rather than continuing to fight the newer
+build's internals.
+
+## 1. Get the code onto Colab (fresh runtime)
 
 ```python
 !git clone https://github.com/abhishekdhakaab/multimodal-system.git fenris
 %cd fenris
 !pip install -r requirements.txt
+!pip install -U "jax[cuda12]==0.4.34" "jaxlib==0.4.34"
+```
+
+Then **Runtime -> Restart session** (needed for the pinned native libraries
+to actually load), and in a fresh cell:
+
+```python
+%cd fenris
+import jax
+print(jax.__version__)  # should print 0.4.34
 ```
 
 ## 2. Confirm you have a GPU runtime
@@ -26,46 +45,40 @@ Runtime -> Change runtime type -> T4 GPU (free tier). Then verify:
 ## 3. Build the kernel
 
 ```python
-!nvcc -shared -Xcompiler -fPIC -arch=sm_75 -std=c++17 \
-    -I$(python3 -c "import jax.ffi; print(jax.ffi.include_dir())") \
+!nvcc -shared -Xcompiler -fPIC -arch=sm_75 \
     kernels/fused_attention.cu kernels/custom_call.cpp \
     -o kernels/fused_attention.so
 ```
 
-The `-arch=sm_75` flag (T4's compute capability) and the FFI header
-include path (`jax.ffi.include_dir()`, confirmed present at
-`<that path>/xla/ffi/api/ffi.h` on Colab) were both needed for real —
-not hypothetical, both come from the actual first successful build.
+No FFI C++ header or `-std=c++17` needed at this version — `custom_call.cpp`
+uses the plain legacy ABI (`cuda_runtime.h` only), confirmed to be the right
+choice here since `jax.ffi.include_dir()` (needed for the newer typed-FFI
+approach) doesn't even exist at 0.4.34.
 
-## 4. What actually went wrong, in order (for real, not hypothetical)
+## 4. The full debugging history (6 real rounds, for the record)
 
-Three real issues were found and fixed, each discovered only by running
-on actual hardware and pasting the real error back:
-
-1. **`jax.extend.ffi` doesn't exist** (JAX 0.11.1 on this Colab build).
-   The FFI API was promoted to a stable top-level `jax.ffi` module —
-   same function names, shorter path. Fixed in `kernels/register.py`.
-
-2. **`jax.ffi.ffi_call`'s real signature is two-stage**: it returns a
-   callable, which you then call with the operands — not a single call
-   taking operands directly. There's also no `opaque=` kwarg; found the
-   real signature via `inspect.signature(jax.ffi.ffi_call)` on Colab
-   rather than guessing again.
-
-3. **This build's CUDA plugin doesn't support the legacy "ORIGINAL"
-   custom-call ABI (api_version=1) at all** — confirmed because JAX's
-   *own internal* plugin initialization hits the identical
-   `"Unsupported custom call target type for api_version=1"` error,
-   independent of our kernel. This meant the original simple
-   `void** buffers + opaque bytes` C++ handler (`custom_call.cpp`)
-   had to be rewritten entirely against the modern typed-FFI convention
-   (`xla/ffi/api/ffi.h`, `XLA_FFI_DEFINE_HANDLER`/`XLA_FFI_REGISTER_HANDLER`,
-   api_version=4) — not just a Python-side glue fix. That rewrite is
-   what's in `custom_call.cpp` now; it was a best-effort rewrite against
-   the documented API, itself unverified by compilation until you run
-   it. If nvcc throws a real compile error on the macro/template usage,
-   that's the next thing to paste back and fix — same pattern as the
-   first three issues.
+1. **`jax.extend.ffi` doesn't exist on Colab's default 0.11.1** — promoted
+   to a stable top-level `jax.ffi` module there.
+2. **`jax.ffi.ffi_call` is two-stage** (returns a callable, call it with
+   operands) with no `opaque=` kwarg — found via `inspect.signature`.
+3. **Colab's default build's CUDA plugin doesn't support the legacy ABI
+   (api_version=1) at all** — confirmed because JAX's own internal plugin
+   init hits the identical error registering its own handlers.
+4. Rewrote to the modern typed-FFI convention (`XLA_FFI_DEFINE_HANDLER` +
+   `XLA_FFI_REGISTER_HANDLER`) — compiled, but **failed to link**:
+   `GetXlaFfiApi` isn't available in pip-distributed jaxlib (that macro
+   needs the full XLA runtime linked in).
+5. Found `XLA_FFI_DEFINE_HANDLER_SYMBOL` by reading `xla/ffi/api/api.h`
+   directly on Colab — exports a plain C symbol, exactly for this
+   externally-loaded-plugin situation. Compiled AND linked.
+6. Registration (via both `jax.ffi.register_ffi_target` and
+   `jaxlib.xla_client.register_custom_call_target`) succeeded with zero
+   errors, but the handler was never reachable at execution
+   (`NOT_FOUND`) — looked like a PJRT-plugin registry isolation issue in
+   that specific build, not fixable from our side. **Pinned jax/jaxlib
+   0.4.34 instead** (step 1 above) and reverted to the simple legacy ABI,
+   which doesn't need any of the typed-FFI machinery that version lacks
+   anyway.
 
 ## 5. Run correctness tests
 
