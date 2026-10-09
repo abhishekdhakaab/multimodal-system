@@ -40,11 +40,14 @@ def _softmax(x):
     return e / jnp.sum(e, axis=-1, keepdims=True)
 
 
-def forward(params, vision_embed, lidar_points):
+def cross_attend(params, vision_embed, lidar_points):
     """
     vision_embed: [B, FUSION_DIM]        (one query token, the vision CLS embedding)
     lidar_points: [B, N, FUSION_DIM]     (N key/value tokens, per-point lidar features)
-    -> logits: [B, NUM_CLASSES]
+    -> combined: [B, 2*FUSION_DIM], the fused representation BEFORE any
+       classification head -- shared by both the plain softmax head
+       (forward, below) and the zero-shot embedding-matching head
+       (model/zero_shot_head.py).
     """
     q = vision_embed @ params["q_proj"]  # [B, D]
     k = lidar_points @ params["k_proj"]  # [B, N, D]
@@ -54,6 +57,10 @@ def forward(params, vision_embed, lidar_points):
     weights = _softmax(scores)  # [B, N], attention over lidar points
     fused = jnp.einsum("bn,bnd->bd", weights, v)  # [B, D]
 
-    combined = jnp.concatenate([vision_embed, fused], axis=-1)  # [B, 2D]
-    logits = combined @ params["head_w"] + params["head_b"]
-    return logits
+    return jnp.concatenate([vision_embed, fused], axis=-1)  # [B, 2D]
+
+
+def forward(params, vision_embed, lidar_points):
+    """-> logits: [B, NUM_CLASSES], the plain fixed-class softmax head."""
+    combined = cross_attend(params, vision_embed, lidar_points)
+    return combined @ params["head_w"] + params["head_b"]

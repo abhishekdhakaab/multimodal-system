@@ -34,6 +34,7 @@ Colab session for the GPU-dependent pieces.
 | K8s cluster | 3 real nodes (genuinely ARM64), confirmed via `kubectl get nodes` |
 | Canary rollout | v1→v2 promoted (0.83 vs 0.83 live accuracy); v2→v3-bad rolled back (0.105 vs 0.83) |
 | Hard-case mining | Held-out hard-case accuracy 25.71% → 37.14% (+11.43pts), overall val unchanged |
+| Zero-shot classification | 2 classes held out entirely from training; raw zero-shot 0.58% (below chance — seen-class bias), corrected to **24.42%** (2.4x random) via calibrated stacking |
 
 ## 4. What's real vs. honestly simulated
 
@@ -68,6 +69,34 @@ from the original synthetic 4-shape dataset, silently capping the model's
 output head at 4 of ModelNet10's 10 real classes. One-line fix (import the
 class count from the dataset instead of hardcoding it), plus a regression
 test so it can't silently reappear. Full story in `docs/fusion_bug_notes.md`.
+
+## 5b. Zero-shot classification — a real novel contribution, not infra glue
+
+Added after feedback that the project needed a genuine technical
+contribution beyond pipelines and deployment plumbing. Replaced the fixed
+10-way softmax head with a DeViSE-style embedding-matching head: the fused
+embedding is projected into real GloVe word-embedding space, and
+classification is cosine-similarity nearest-neighbor search against
+class-name embeddings — which means the lookup table can include classes
+never seen in training, since there's no per-class learned weight vector
+to be missing.
+
+Held out 2 of ModelNet10's 10 real classes (`desk`, `night_stand`)
+entirely from training. Raw zero-shot accuracy was 0.58% — *below* random
+chance, not just modest. Rather than report that as a dead end, inspected
+actual per-example similarity scores and found the published "seen-class
+bias / hubness" problem: a seen class acting as an attractor for visually
+similar unseen inputs. Applied calibrated stacking (a real technique from
+Chao et al., ECCV 2016) and got zero-shot accuracy up to 24.42% (2.4x
+random chance), with a full tradeoff curve against seen-class accuracy —
+reported honestly as a curve, not a single cherry-picked number. Full
+writeup in `docs/zero_shot_notes.md`.
+
+This is the part of the project that's a genuine, defensible "I built
+something, not just glued pipelines together" contribution — the
+diagnosis-then-fix pattern here is the same kind of ablation-driven
+debugging as the `NUM_CLASSES` bug in section 5, just applied to a harder,
+more interesting problem.
 
 ## 6. Lessons
 

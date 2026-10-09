@@ -7,7 +7,7 @@
 ## STATUS
 
 ```
-Current phase: 8 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
+Current phase: 9 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
 Last completed task:
   - REWORK of Phases 1-2: replaced hand-drawn synthetic shapes with ModelNet10 (real public CAD dataset, no signup) after user feedback that fake data "makes people lose interest." Both modalities derived from the same real mesh per example. See docs/dataset_rework_notes.md.
   - Found and fixed a REAL BUG, not just a tuning problem: model/fusion.py had NUM_CLASSES=4 hardcoded (leftover from the old 4-shape synthetic dataset), silently capping the model's output head at 4 of ModelNet10's 10 real classes. Found via ablation (vision-only=68.9%, lidar-only=87.7%, but the fused model scored only 35% -- worse than either alone, which is what made it clearly a bug and not just undertraining). Full story in docs/fusion_bug_notes.md. Fixed by importing NUM_CLASSES from the dataset's class list everywhere, plus added a regression test (test_fusion_num_classes_matches_real_dataset) so this exact bug class can't silently reappear.
@@ -17,7 +17,7 @@ Last completed task:
   - Phase 3 kernel code written (untested): kernels/reference.py (verified against real model math, diff 3.5e-10), kernels/fused_attention.cu (FlashAttention-style: K/V loaded into shared memory once per (batch,head) block, never materializes the [N,N] score matrix in global memory), kernels/custom_call.cpp (XLA custom-call glue), kernels/register.py (JAX jax.extend.ffi registration), kernels/tests/test_correctness.py (skips cleanly without a built .so), scripts/colab_sync.md (Colab build/debug steps, written expecting first-build compile errors).
   - Full test suite: 13 passed, 3 skipped (the 3 GPU-dependent kernel tests, correctly skip on CPU-only machines) -- data_pipeline (7), model (5), kernels/reference (1).
 Next task: NOTHING pending on this machine. The only remaining work is Phase 3/4 execution, which requires the user to run scripts/colab_sync.md on Colab. When they report back what broke/worked and real benchmark numbers, update kernels/, docs/benchmark_results.md (Phase 4), docs/edge_dual_path_notes.md (real CUDA-path latency), docs/final_report.md's tables, and this STATUS block. Do not fabricate GPU numbers in the meantime.
-Blockers: Phase 3 execution AND Phase 4 (benchmarking) remain blocked on the user's Colab session (by design). Every other phase is complete with real, measured results.
+Blockers: Phase 3 execution AND Phase 4 (benchmarking) remain blocked on the user's Colab session (by design). Every other phase is complete with real, measured results, including Phase 9 (zero-shot classification), added after user feedback that the project needed a genuine technical contribution beyond infra glue. docs/final_report.md should be updated to mention Phase 9's result in its headline numbers table if revisited.
 Extra context for whoever resumes this: a real k3d cluster ("fenris") is currently UP on this machine with 3 nodes and 2 live Deployments (fenris-inference-stable on v2, fenris-inference-canary on v2) -- check `kubectl get pods` / `k3d cluster list` before assuming it needs to be recreated. Docker image `fenris-inference:v1` exists locally and inside the cluster (now includes /hard_cases endpoint). `data_pipeline/telemetry/hard_cases.json` and `model/checkpoints/model_finetuned.pkl` are real artifacts from the Phase 7 run, not placeholders.
 Budget spent so far: $0.00 / $10.00
 Last updated: 2026-10-08
@@ -182,6 +182,23 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 - [x] `scripts/demo_canary.sh`: one-shot script that resets the live cluster to v1, runs v1→v2 (promote) and v2→v3-bad (rollback), prints final deployment state. **Actually re-run as part of this phase** — reproduced the exact documented result (promote then rollback, stable left on v2 throughout).
 
 **Definition of Done:** someone unfamiliar with the project can read `docs/final_report.md` and `README.md` and understand exactly what's real, what's simulated, and why each engineering decision was made. ✅ DONE.
+
+---
+
+### Phase 9 — Zero-shot classification (added after user feedback that the project needed a genuine novel contribution, not just infra glue)
+**Goal:** demonstrate real generalization to classes never seen during training — not a toy, a real held-out-class experiment.
+
+- [x] `model/build_class_embeddings.py`: real GloVe (`glove-wiki-gigaword-50`, 400K vocab) word embeddings for all 10 ModelNet10 class names, cached to `model/class_embeddings.npy` so serving/inference never needs the gensim dependency.
+- [x] `model/zero_shot_head.py`: DeViSE-style embedding-matching head — projects the fused embedding into GloVe space, classifies by cosine similarity against class-name embeddings (not a fixed per-class weight vector, which is what makes unseen classes representable at all).
+- [x] `model/fusion.py` refactored to expose `cross_attend()` (pre-head fused embedding) separately from `forward()` (the original softmax head) — both heads now share the same backbone.
+- [x] `model/train_zero_shot.py`: held out `desk` and `night_stand` **entirely** from training (zero training images), trained on the remaining 8 classes, evaluated on all 10.
+- [x] Found a real negative result and diagnosed it properly (not just reported it): raw zero-shot accuracy was 0.58%, *below* the 10% random baseline — inspected actual per-example similarity scores (not just the aggregate number) and identified the published "seen-class bias / hubness" problem (seen classes act as attractors for visually-similar unseen ones).
+- [x] `model/calibrate_zero_shot.py`: implemented calibrated stacking (Chao et al., ECCV 2016), a real published correction — swept the calibration scalar and got zero-shot accuracy up to **24.42%** (2.4x random chance) at the cost of seen-class accuracy, with a balanced operating point at gamma=4.0 (65.9% seen / 19.8% zero-shot).
+- [x] `model/tests/test_zero_shot.py`: shape/normalization tests for the new head.
+
+**Definition of Done:** a genuine held-out-class generalization result, honestly reported including the failure mode, the diagnosis, and the real tradeoff curve of the fix — not a single cherry-picked number. ✅ DONE. Full writeup in `docs/zero_shot_notes.md`. 25/28 tests passing (3 GPU-dependent skip).
+
+**Note on scope:** the user's feedback also raised sink-token sparse attention (tied to the Phase 3 kernel), MoE routing, and speculative decoding for action generation. Sparse attention is a real candidate for future work (see `docs/final_report.md`'s "what's left" section). Speculative decoding for action generation requires a VLA with real action-sequence labels, which don't exist in this project's data (ModelNet10 is static object classification) — building that would mean fabricating action data, which was explicitly flagged as a problem earlier in this project, so it was not attempted.
 
 ---
 

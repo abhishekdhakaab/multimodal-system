@@ -2,3 +2,4 @@ jax
 numpy
 pillow
 pytest
+gensim
