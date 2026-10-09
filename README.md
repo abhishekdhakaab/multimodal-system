@@ -52,6 +52,13 @@ python -m k8s.canary_controller rollout --model-path /app/model/checkpoints/mode
 | GPU fleet node | **Simulated, labeled as such** (`gpu-simulated`) — no real GPU node attached |
 | Canary rollout/rollback | **Real** — actually run against the live cluster, logs in `docs/k8s_canary_demo.md` |
 | Telemetry / hard-case mining | **Real** — actually run, numbers in `docs/hard_case_mining_notes.md` |
+| Zero-shot classification | **Real** — raw result below random chance (diagnosed as seen-class bias), corrected to 2.4x random via calibrated stacking, `docs/zero_shot_notes.md` |
+| Content-adaptive token pruning | **Real** — measured data property + fine-tuned result (80.95% at half the tokens) + sink-token A/B, `docs/token_pruning_notes.md` |
+| Draft-then-escalate cascade | **Real** — the honest analog to speculative decoding, 24.3% of inputs resolved by a ~2000x-cheaper draft, `docs/speculative_cascade_notes.md` |
+| Mixture-of-Experts head | **Real** — unsupervised semantic specialization found, load-balancing loss ablated, `docs/moe_notes.md` |
+| Sensor-failure robustness | **Real, negative finding** — fusion is NOT robust to sensor dropout here, diagnosed why, `docs/robustness_notes.md` |
+| CI pipeline | **Real** — verified by simulating a fresh checkout, `.github/workflows/ci.yml` |
+| Experiment log | **Real** — every number in every doc traces to `docs/experiments_log.json` |
 
 ## Project structure
 
@@ -76,4 +83,12 @@ fenris/
 - `docs/edge_dual_path_notes.md` — ARM vs CUDA inference path
 - `docs/k8s_canary_demo.md` — the real canary rollout/rollback run
 - `docs/hard_case_mining_notes.md` — the real telemetry closed-loop run
+- `docs/zero_shot_notes.md` — zero-shot classification: a failure, diagnosed, partially fixed
+- `docs/token_pruning_notes.md` — content-adaptive token pruning + sink tokens, with real images in `docs/images/`
+- `docs/speculative_cascade_notes.md` — the draft-then-escalate cascade (speculative decoding's honest analog)
+- `docs/moe_notes.md` — Mixture-of-Experts, emergent specialization, load-balancing ablation
+- `docs/robustness_notes.md` — sensor-failure robustness, a real negative finding
+- `docs/experiments_log.json` — every real number in this project, in one structured log
 - `docs/final_report.md` — the complete writeup
+
+**`PLAN.md`** is the authoritative index — every phase's checklist links to the doc(s) with its real results, and the `STATUS` block always says what's done vs. pending.
