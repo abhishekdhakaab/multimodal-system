@@ -115,6 +115,13 @@ def fused_attention(q, k, v, num_heads):
     k_heads = split_heads(k)
     v_heads = split_heads(v)
 
-    out_heads = _primitive.bind(q_heads, k_heads, v_heads, num_heads=num_heads)
+    # the primitive only has an abstract_eval + mlir lowering rule, no
+    # eager "impl" rule -- binding it outside jax.jit raises
+    # NotImplementedError ("Evaluation rule ... not implemented"), confirmed
+    # directly from a real run. Wrapping in jit here means every call goes
+    # through compilation (which does use the mlir lowering), whether this
+    # function itself is called eagerly or from inside a larger jitted model.
+    bound = jax.jit(lambda q, k, v: _primitive.bind(q, k, v, num_heads=num_heads))
+    out_heads = bound(q_heads, k_heads, v_heads)
 
     return out_heads.transpose(0, 2, 1, 3).reshape(b, n, d)
