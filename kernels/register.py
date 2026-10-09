@@ -25,6 +25,23 @@ The `num_heads` attribute is passed as a keyword argument on the INNER
 call (the callable `ffi_call(...)` returns), matching
 `.Attr<int32_t>("num_heads")` in custom_call.cpp's binding.
 
+UPDATE 5: with registration reaching XLA cleanly, the real error became
+`No FFI handler registered for fused_attention on a platform CUDA
+(canonical cuda)` -- XLA prints both the platform string we passed and
+its "canonical" (lowercased) form, implying our registration under
+`platform="CUDA"` and the dispatch-time lookup (on the canonicalized key)
+never matched. Changed to `platform="cuda"` (lowercase).
+
+KNOWN HARMLESS NOISE: every run also logs an ERROR from
+`jax_plugins.xla_cuda13.initialize()` about "Unsupported custom call
+target type" / "API version ... not supported" during lazy CUDA backend
+init. This is JAX's own internal plugin registering ITS OWN handlers
+(not "fused_attention"), unrelated to our registration -- confirmed
+because it fires with contradictory complaints across different runs
+(first said api_version=1 unsupported, then said api_version=4
+unsupported, for internal calls we don't control) and never correlates
+with whether our own tests pass or fail. Safe to ignore.
+
 Build step (run on Colab, not here -- needs the FFI header path):
     nvcc -shared -Xcompiler -fPIC -arch=sm_75 -std=c++17 \
         -I$(python3 -c "import jax.ffi; print(jax.ffi.include_dir())") \
@@ -57,7 +74,7 @@ def _ensure_registered():
     handler_fn = getattr(lib, "FusedAttentionHandler")
     capsule = jax.ffi.pycapsule(handler_fn)
     jax.ffi.register_ffi_target(
-        "fused_attention", capsule, platform="CUDA", api_version=4
+        "fused_attention", capsule, platform="cuda", api_version=4
     )
     _registered = True
 
