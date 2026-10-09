@@ -7,7 +7,8 @@
 ## STATUS
 
 ```
-Current phase: 11 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9, 10, 11 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU. User asked (2026-10-08-ish) for wall-clock latency measurement to be deferred to later and for broader keyword coverage (sink tokens, speculative decoding, MoE) -- sink tokens and the speculative-decoding analog (cascade inference) are now done (Phase 10 addendum, Phase 11). MoE routing and the temporal/streaming bucket-KV-cache idea remain open, discussed with the user but not yet built -- see the running conversation for the prioritization reasoning (MoE next, temporal KV-cache last since it requires a real scope increase: multi-view sequences of the same real object to have "old tokens" to bucket at all).
+Current phase: 12 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
+User asked for wall-clock latency measurement to be deferred to later and for broader keyword coverage (sink tokens, speculative decoding, MoE, bucket/group token representation). Status: sink tokens (Phase 10 addendum), speculative-decoding analog / cascade inference (Phase 11), and MoE (Phase 12) are all done. The ONLY remaining keyword from that feedback is the temporal/streaming "bucket/group old-token representation" idea -- not started, and it's the one that needs a real scope decision: this model is single-frame, so there's no "old tokens" to bucket without first building a multi-view-sequence setting (e.g. treating several real views of the same real object as a short sequence, "robot circling an object over time"). That's a genuine architecture change, not an incremental addition like the last three -- should be confirmed with the user before starting, unlike Phases 10-12 which were small enough to just build and report.
 Last completed task:
   - REWORK of Phases 1-2: replaced hand-drawn synthetic shapes with ModelNet10 (real public CAD dataset, no signup) after user feedback that fake data "makes people lose interest." Both modalities derived from the same real mesh per example. See docs/dataset_rework_notes.md.
   - Found and fixed a REAL BUG, not just a tuning problem: model/fusion.py had NUM_CLASSES=4 hardcoded (leftover from the old 4-shape synthetic dataset), silently capping the model's output head at 4 of ModelNet10's 10 real classes. Found via ablation (vision-only=68.9%, lidar-only=87.7%, but the fused model scored only 35% -- worse than either alone, which is what made it clearly a bug and not just undertraining). Full story in docs/fusion_bug_notes.md. Fixed by importing NUM_CLASSES from the dataset's class list everywhere, plus added a regression test (test_fusion_num_classes_matches_real_dataset) so this exact bug class can't silently reappear.
@@ -228,6 +229,19 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 - [x] `model/tests/test_draft_classifier.py`: 3 tests.
 
 **Definition of Done:** a real, usable coverage/accuracy/compute tradeoff, not a toy. ✅ DONE. At threshold=0.8: **24.3% of inputs resolved by the ~2000x-cheaper draft alone, cascade accuracy 85.24% (-0.77pts vs always running the full model)** — an estimated 1.32x average-case compute saving. This curve has a genuinely usable "good" region (threshold 0.7-0.9), unlike the zero-shot result's uniformly-bad tradeoff — full writeup in `docs/speculative_cascade_notes.md`. 29/32 tests passing (3 GPU-dependent skip).
+
+---
+
+### Phase 12 — Mixture-of-Experts classification head
+**Goal:** cover the "MoE for different scenarios" keyword, honestly testing whether it does anything real rather than assuming it will.
+
+- [x] `model/moe_head.py`: 3 parallel linear expert heads + a learned gate. Soft routing (differentiable mixture) for training, hard routing (top-1 expert only) for the real sparse-inference question.
+- [x] `model/train_moe.py`: trained with a load-balancing auxiliary loss (standard defensive MoE trick), reported soft vs hard accuracy AND the actual expert usage distribution AND the expert-vs-true-class breakdown — not just an aggregate number.
+- [x] Found real, unforced semantic specialization: expert 0 ≈ seating/fixtures (chair, night_stand, toilet), expert 1 ≈ bedroom/bathroom (bathtub, bed), expert 2 ≈ desk/surface furniture (monitor, sofa, table) — discovered by the gate from the classification objective alone, not supervised.
+- [x] Ran the obvious follow-up ablation instead of assuming the defensive mechanism was necessary: trained WITHOUT the load-balancing loss too. Usage stayed balanced either way (34/25/41% vs 39/30/31%) — **the load-balancing loss turned out not to be load-bearing for this problem**, an honest negative-ish finding about one's own added mechanism, not hidden.
+- [x] `model/tests/test_moe.py`: 4 tests, including that the balance loss is correctly ~0 for uniform usage and positive for collapsed usage.
+
+**Definition of Done:** a real measurement of whether MoE routing does anything meaningful here, not a toy that's assumed to work. ✅ DONE. Soft-routed 83.92%, hard-routed 82.71% (a real, small, expected soft-vs-hard gap) — both slightly below the single-head fusion model's 86.01%, reported honestly rather than cherry-picked. The genuinely interesting finding is the emergent semantic clustering, not a efficiency win (experts are small linear heads here, so real compute savings from hard routing would be modest in this specific model size). Full writeup in `docs/moe_notes.md`. 33/36 tests passing (3 GPU-dependent skip).
 
 ---
 

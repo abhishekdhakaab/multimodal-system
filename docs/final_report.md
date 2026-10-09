@@ -37,6 +37,7 @@ Colab session for the GPU-dependent pieces.
 | Zero-shot classification | 2 classes held out entirely from training; raw zero-shot 0.58% (below chance — seen-class bias), corrected to **24.42%** (2.4x random) via calibrated stacking |
 | Content-adaptive token pruning | Measured 53% of patches are near-empty (task-specific structure); fine-tuned with 50% tokens pruned: **80.95% accuracy (-5.06pts), ~2.65x fewer attention FLOPs**; +sink tokens: 81.94% (-4.07pts) |
 | Draft-then-escalate cascade | Cheap draft (~1,982x fewer FLOPs, 64.65% accuracy) escalates to the full model when unsure; at threshold=0.8: **24.3% of inputs resolved by the draft alone, 85.24% cascade accuracy (-0.77pts), ~1.32x avg-case compute saving** |
+| Mixture-of-Experts head | 3 experts, soft-trained/hard-evaluated: 83.92%/82.71% accuracy; **gate learned real semantic clustering (seating vs bedroom/bath vs desk furniture) unsupervised**; load-balancing loss tested, found not actually necessary here |
 
 ## 4. What's real vs. honestly simulated
 
@@ -152,6 +153,34 @@ full model** — an estimated 1.32x average-case compute saving. This is
 the strongest curve of the three "novel contribution" additions (zero-
 shot, token pruning, this one) — it has a genuinely usable "good"
 operating region, not just a diagnostic finding.
+
+## 5e. Mixture-of-Experts — testing the mechanism honestly, not assuming it helps
+
+Covers the "MoE for different scenarios" feedback. Built 3 parallel
+linear expert heads + a learned gate (`model/moe_head.py`), trained with
+soft routing, evaluated with hard (top-1) routing — the real question
+being whether the gate specializes meaningfully or collapses onto one
+expert, a well-documented real MoE failure mode that was tested for, not
+assumed away.
+
+**No collapse, and real unsupervised semantic specialization**: the gate
+split examples into seating/fixtures (chair, night_stand, toilet),
+bedroom/bathroom furniture (bathtub, bed), and desk/surface furniture
+(monitor, sofa, table) — discovered entirely from the classification
+objective, never told to group by category.
+
+**Ran the obvious follow-up instead of stopping at the first result**:
+added a load-balancing auxiliary loss defensively, then tested whether
+it was actually necessary by training without it too. Usage stayed
+balanced either way (34/25/41% vs 39/30/31%) — the defensive mechanism
+wasn't load-bearing for this problem. Reported as a genuine, slightly
+humbling finding about one's own added complexity, not hidden because it
+didn't confirm the mechanism's value.
+
+Accuracy (82.71-83.92%) is honestly below the single-head model's
+86.01% — three smaller heads didn't beat one well-tuned head here,
+reported plainly rather than cherry-picking the better of soft/hard to
+make the section look stronger than it is.
 
 ## 6. Lessons
 
