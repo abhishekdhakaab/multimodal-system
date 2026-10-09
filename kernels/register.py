@@ -5,24 +5,37 @@ usable inside jit like any other op.
 UPDATE (first real Colab run, JAX 0.11.1): `jax.extend.ffi` no longer
 exists -- confirmed via `hasattr(jax, "extend")` -> False on the actual
 Colab environment. The FFI API was promoted out of the experimental
-`jax.extend` namespace to a stable top-level `jax.ffi` module, same
-function names (`register_ffi_target`, `ffi_call`), just a shorter path.
-This file now targets `jax.ffi` directly. If `ffi_call`'s exact keyword
-arguments (e.g. `opaque=`) don't match this JAX version either, check
-`help(jax.ffi.ffi_call)` in the Colab session -- the module path was the
-first and most likely mismatch, but the call signature itself may have
-also shifted. Both custom_call.cpp's exposed symbol and this file assume
-the "opaque buffers" ABI described in custom_call.cpp's comments.
+`jax.extend` namespace to a stable top-level `jax.ffi` module.
+
+UPDATE 2 (same session): `jax.ffi.ffi_call`'s real signature (confirmed
+via `inspect.signature` on Colab) is a two-stage call --
+`jax.ffi.ffi_call(target_name, result_shape_dtypes, **options)` returns a
+callable, which is then called with the actual operands -- not a single
+call taking operands directly. There's no `opaque=` kwarg; the legacy
+config string is `legacy_backend_config`, passed at the OUTER call
+(ffi_call itself), not the inner one. `custom_call_api_version` defaults
+to 4 (the modern typed-FFI calling convention, which expects a C++
+handler built against `xla/ffi/api/ffi.h`'s CallFrame-based API) -- our
+custom_call.cpp implements the OLDER, simpler "buffers + opaque bytes"
+ABI (api_version 1, XLA's "ORIGINAL" custom-call convention), so
+`custom_call_api_version=1` must be set explicitly.
+`jax.ffi.register_ffi_target`'s signature (also confirmed on Colab)
+already defaults to `api_version=1`, which matches -- no change needed
+there, but `platform="CUDA"` (not "gpu") is required.
+
+Switched the opaque payload from packed struct bytes to a plain text
+string ("B NUM_HEADS N HEAD_DIM") since `legacy_backend_config` is typed
+`str`, not `bytes` -- avoids any binary/string encoding risk. See
+custom_call.cpp's matching parse-side update.
 
 Build step (run on Colab, not here):
-    nvcc -shared -Xcompiler -fPIC \
+    nvcc -shared -Xcompiler -fPIC -arch=sm_75 \
         kernels/fused_attention.cu kernels/custom_call.cpp \
         -o kernels/fused_attention.so
 """
 
 import ctypes
 import os
-import struct
 
 import jax
 import jax.numpy as jnp
@@ -48,7 +61,7 @@ def _ensure_registered():
     )
 
     jax.ffi.register_ffi_target(
-        "fused_attention", target_capsule, platform="gpu"
+        "fused_attention", target_capsule, platform="CUDA", api_version=1
     )
     _registered = True
 
@@ -78,15 +91,14 @@ def fused_attention(q, k, v, num_heads):
     k_heads = split_heads(k)
     v_heads = split_heads(v)
 
-    opaque = struct.pack("iiii", b, num_heads, n, head_dim)
+    opaque = f"{b} {num_heads} {n} {head_dim}"
 
-    out_heads = jax.ffi.ffi_call(
+    call = jax.ffi.ffi_call(
         "fused_attention",
         jax.ShapeDtypeStruct(q_heads.shape, q_heads.dtype),
-        q_heads,
-        k_heads,
-        v_heads,
-        opaque=opaque,
+        custom_call_api_version=1,
+        legacy_backend_config=opaque,
     )
+    out_heads = call(q_heads, k_heads, v_heads)
 
     return out_heads.transpose(0, 2, 1, 3).reshape(b, n, d)

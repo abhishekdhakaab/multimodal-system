@@ -2,22 +2,19 @@
 // kernel in fused_attention.cu. This is the piece that lets a JAX-jitted
 // function call our hand-written kernel as if it were a normal JAX op.
 //
-// IMPORTANT HONESTY NOTE (read before debugging on Colab): JAX's custom-call
-// / FFI API has changed across versions (xla_client.register_custom_call_target
-// in older JAX, jax.extend.ffi in newer JAX). This file targets the newer
-// XLA FFI API (the "ffi" convention: an XLA_FFI_Handler-style entrypoint
-// reading typed buffers from an XLA_FFI_CallFrame). It was written against
-// the JAX/XLA FFI documentation but has NOT been run or compiled, since this
-// machine has no CUDA toolchain. Expect to fix real compile errors on first
-// build in Colab -- that's normal, not a sign the whole approach is wrong.
-// If the exact FFI struct layout has moved on, the fallback is the older,
-// more stable "opaque buffer" custom-call ABI (void** buffers, void* opaque,
-// size_t opaque_len) registered via XLA_REGISTER_CUSTOM_CALL_TARGET -- also
-// sketched below as CPU-independent fallback notes.
+// CONFIRMED on first real Colab run (JAX 0.11.1): this implements XLA's
+// older, simpler "ORIGINAL" custom-call ABI (void** buffers, opaque
+// bytes) -- registered via `jax.ffi.register_ffi_target(..., api_version=1)`
+// and called via `jax.ffi.ffi_call(..., custom_call_api_version=1,
+// legacy_backend_config=<string>)` on the Python side (kernels/register.py).
+// This was the right ABI choice on the first try -- the only things that
+// needed fixing were the Python-side call pattern and module paths, not
+// this file's fundamental approach.
 
 #include <cuda_runtime.h>
 #include <cstdint>
-#include <cstring>
+#include <cstdio>
+#include <string>
 
 extern "C" void launch_fused_attention(
     const float* q, const float* k, const float* v, float* out,
@@ -25,33 +22,21 @@ extern "C" void launch_fused_attention(
     cudaStream_t stream
 );
 
-// Metadata passed alongside the buffers: batch_size, num_heads, N, head_dim.
-// Packed into the custom call's "opaque" bytes by the JAX-side wrapper
-// (see register.py), since XLA custom calls don't carry shape info directly
-// to simple buffer-based targets.
-struct AttentionOpaque {
-    int32_t batch_size;
-    int32_t num_heads;
-    int32_t seq_len;
-    int32_t head_dim;
-};
-
-// Older/simpler XLA custom-call ABI: buffers[0..2] are Q, K, V (device
-// pointers), buffers[3] is the output (device pointer). `opaque` carries the
-// AttentionOpaque struct packed as bytes, `opaque_len` its size. This is the
-// form registered with XLA_REGISTER_CUSTOM_CALL_TARGET in older/simpler JAX
-// custom-call setups and is the more likely one to "just work" with less
-// fighting the exact FFI struct version -- try this path first on Colab if
-// the newer jax.extend.ffi path (register.py's primary path) hits API
-// mismatches.
+// buffers[0..2] are Q, K, V (device pointers), buffers[3] is the output
+// (device pointer). `opaque` carries "B NUM_HEADS N HEAD_DIM" as a plain
+// space-separated text string (built in register.py's fused_attention()) --
+// not null-terminated per XLA's convention, so it's copied into a
+// std::string using the explicit length before parsing, rather than
+// treated as a C string directly.
 extern "C" void FusedAttentionCustomCall(
     cudaStream_t stream,
     void** buffers,
     const char* opaque,
     size_t opaque_len
 ) {
-    AttentionOpaque meta;
-    std::memcpy(&meta, opaque, sizeof(AttentionOpaque));
+    std::string config(opaque, opaque_len);
+    int batch_size, num_heads, seq_len, head_dim;
+    std::sscanf(config.c_str(), "%d %d %d %d", &batch_size, &num_heads, &seq_len, &head_dim);
 
     const float* q = reinterpret_cast<const float*>(buffers[0]);
     const float* k = reinterpret_cast<const float*>(buffers[1]);
@@ -60,7 +45,7 @@ extern "C" void FusedAttentionCustomCall(
 
     launch_fused_attention(
         q, k, v, out,
-        meta.batch_size, meta.num_heads, meta.seq_len, meta.head_dim,
+        batch_size, num_heads, seq_len, head_dim,
         stream
     );
 }
