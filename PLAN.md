@@ -7,8 +7,9 @@
 ## STATUS
 
 ```
-Current phase: 13 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
-User asked to cover resume-relevant ground across 4 different ML job archetypes (robotics/perception: robustness test; CV: pruning visualization; infra/platform: CI pipeline; research: experiment log) -- all 4 done in Phase 13, each with real measured output, not just written and assumed. The temporal/streaming "bucket/group old-token representation" idea from earlier feedback is still open and still needs a scope decision (requires turning this into a multi-view-sequence problem, a real architecture change) -- not touched this session, still waiting on the user.
+Current phase: 14 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
+Every keyword/idea raised across this whole conversation has now been addressed with real, measured work EXCEPT the GPU-blocked kernel/benchmarking. The user gave explicit go-ahead for Phase 14's scope increase (the temporal multi-view-sequence setup). Nothing else is known to be open.
+Note on timing: the user explicitly said not to treat any wall-clock/timing numbers from this session as final, since other work was running on the same laptop concurrently (modality-dropout training and temporal-sequence generation ran at the same time). Only accuracy/FLOP-based numbers from Phase 14 should be treated as real; no timing claims were made for it anyway.
 Last completed task:
   - REWORK of Phases 1-2: replaced hand-drawn synthetic shapes with ModelNet10 (real public CAD dataset, no signup) after user feedback that fake data "makes people lose interest." Both modalities derived from the same real mesh per example. See docs/dataset_rework_notes.md.
   - Found and fixed a REAL BUG, not just a tuning problem: model/fusion.py had NUM_CLASSES=4 hardcoded (leftover from the old 4-shape synthetic dataset), silently capping the model's output head at 4 of ModelNet10's 10 real classes. Found via ablation (vision-only=68.9%, lidar-only=87.7%, but the fused model scored only 35% -- worse than either alone, which is what made it clearly a bug and not just undertraining). Full story in docs/fusion_bug_notes.md. Fixed by importing NUM_CLASSES from the dataset's class list everywhere, plus added a regression test (test_fusion_num_classes_matches_real_dataset) so this exact bug class can't silently reappear.
@@ -18,6 +19,7 @@ Last completed task:
   - Phase 3 kernel code written (untested): kernels/reference.py (verified against real model math, diff 3.5e-10), kernels/fused_attention.cu (FlashAttention-style: K/V loaded into shared memory once per (batch,head) block, never materializes the [N,N] score matrix in global memory), kernels/custom_call.cpp (XLA custom-call glue), kernels/register.py (JAX jax.extend.ffi registration), kernels/tests/test_correctness.py (skips cleanly without a built .so), scripts/colab_sync.md (Colab build/debug steps, written expecting first-build compile errors).
   - Full test suite: 13 passed, 3 skipped (the 3 GPU-dependent kernel tests, correctly skip on CPU-only machines) -- data_pipeline (7), model (5), kernels/reference (1).
 Next task: NOTHING pending on this machine. The only remaining work is Phase 3/4 execution, which requires the user to run scripts/colab_sync.md on Colab. When they report back what broke/worked and real benchmark numbers, update kernels/, docs/benchmark_results.md (Phase 4), docs/edge_dual_path_notes.md (real CUDA-path latency), docs/final_report.md's tables, and this STATUS block. Do not fabricate GPU numbers in the meantime.
+Also pending whenever convenient: a real wall-clock latency measurement (not FLOP estimates) for token pruning and the cascade, on a quiet machine -- deferred per the user's own request, not forgotten.
 Blockers: Phase 3 execution AND Phase 4 (benchmarking) remain blocked on the user's Colab session (by design). Every other phase is complete with real, measured results, including Phase 9 (zero-shot classification) and Phase 10 (content-adaptive token pruning) -- both added after user feedback that the project needed genuine technical contributions beyond infra glue and generic-kernel-fusion. Phase 10 in particular is the strongest "novel, task-specific" result in the project: measured the data's own structure (53% empty patches) before deciding what to optimize, rather than applying a known technique blindly.
 Suggestion if this is picked back up again: the ACTUAL latency measurement for Phase 10 (not just the theoretical FLOP estimate) could be redone once the machine is quiet, or alongside the Colab GPU session -- would make the token-pruning result fully complete (accuracy curve + real measured latency, same rigor as everything else in this project).
 Extra context for whoever resumes this: a real k3d cluster ("fenris") is currently UP on this machine with 3 nodes and 2 live Deployments (fenris-inference-stable on v2, fenris-inference-canary on v2) -- check `kubectl get pods` / `k3d cluster list` before assuming it needs to be recreated. Docker image `fenris-inference:v1` exists locally and inside the cluster (now includes /hard_cases endpoint). `data_pipeline/telemetry/hard_cases.json` and `model/checkpoints/model_finetuned.pkl` are real artifacts from the Phase 7 run, not placeholders.
@@ -255,6 +257,25 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 - [x] Tests added for all four: `model/tests/test_robustness.py`, `model/tests/test_visualize_pruning.py`, `scripts/tests/test_experiment_log.py`.
 
 **Definition of Done:** each of the 4 additions is real, tested, and verified — not just written and assumed to work. ✅ DONE. 37/40 tests passing (3 GPU-dependent skip).
+
+---
+
+### Phase 14 — Modality-dropout robustness fix, and the temporal bucket/group KV-cache
+**Goal:** (1) actually fix what Phase 13's robustness test only diagnosed; (2) resolve the last open keyword from earlier feedback, with the user's explicit go-ahead on the scope increase.
+
+**Part A — modality dropout (the fix, not just the diagnosis):**
+- [x] `model/train_modality_dropout.py`: retrained from scratch with each example independently having lidar zeroed (p=0.15) or image zeroed (p=0.15) during training. Clean accuracy: 86.01% → 84.69% (a small, real cost).
+- [x] `model/compare_robustness.py`: same failure suite, same noise seed, both checkpoints side by side — a fair comparison, not separately-run numbers.
+- [x] **Real result, honestly complete**: lidar-dropped 20.15%→56.61% (+36.45pts), camera-dropped 61.34%→81.28% (+19.93pts) — the fix works dramatically for a dead sensor. But lidar-noise barely changed (17.18%→16.85%) and camera-noise got WORSE (69.27%→63.55%) — modality dropout fixes "sensor dies," not "sensor lies," and that limitation is reported, not hidden. Full writeup in `docs/robustness_notes.md` (updated).
+
+**Part B — temporal bucket/group memory (the last open keyword):**
+- [x] `model/generate_temporal_sequences.py`: 8-frame sequences per object (400 train, 150 val), simulating a robot circling a REAL object over time — same real mesh per sequence, different random viewpoint per frame, stated honestly as simulated motion around real geometry, not fabricated identity. Each frame embedded via the frozen single-frame backbone.
+- [x] `model/temporal_head.py`: the bucket/group mechanism itself — 2 most-recent frames kept at full resolution, older 6 frames compressed into 2 averaged groups, 8→4 tokens regardless of sequence length. One cross-attention layer over the memory, latest frame as query.
+- [x] **Caught and fixed a real methodological trap before reporting anything**: the first run trained one model on bucketed memory only, then evaluated it on full memory too — an out-of-distribution comparison, not a fair one. Fixed by training two separate matched models (one per memory regime).
+- [x] **Real, fairly-measured result**: no-memory 82.00% → bucketed 89.33% → full (uncompressed) 87.33%. Temporal memory clearly helps; bucketed memory matched-or-beat full memory even in the fair comparison, plausibly because the coarser representation regularizes better in this small-data (400 sequences) regime — stated as a plausible explanation, not an overclaimed universal result. Full writeup in `docs/temporal_bucket_notes.md`.
+- [x] `model/tests/test_temporal_head.py`: 3 tests, including an exact-value check that the averaging/grouping arithmetic is correct.
+
+**Definition of Done:** both pieces are real, measured, and honestly reported including their limits — Part A's fix doesn't generalize to noise, Part B's surprising result is caveated as small-scale, not oversold. ✅ DONE.
 
 ---
 

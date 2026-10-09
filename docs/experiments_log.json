@@ -118,5 +118,69 @@
     "metric": "val_accuracy",
     "result": 0.6134,
     "notes": "Less catastrophic than losing lidar, consistent with the lidar-only ablation being stronger"
+  },
+  {
+    "phase": 14,
+    "experiment": "Modality dropout training, clean accuracy",
+    "change": "Retrained with lidar/image dropout p=0.15 each",
+    "metric": "val_accuracy",
+    "result": 0.8469,
+    "notes": "Small real cost (-1.32pts) vs original 86.01% baseline"
+  },
+  {
+    "phase": 14,
+    "experiment": "Modality dropout: lidar dropped",
+    "change": "Same checkpoint, lidar zeroed at inference",
+    "metric": "val_accuracy",
+    "result": 0.5661,
+    "notes": "Original: 0.2015. Fix works dramatically for a dead sensor"
+  },
+  {
+    "phase": 14,
+    "experiment": "Modality dropout: camera dropped",
+    "change": "Same checkpoint, camera zeroed at inference",
+    "metric": "val_accuracy",
+    "result": 0.8128,
+    "notes": "Original: 0.6134"
+  },
+  {
+    "phase": 14,
+    "experiment": "Modality dropout: lidar heavy noise",
+    "change": "Same checkpoint, lidar corrupted (not zeroed)",
+    "metric": "val_accuracy",
+    "result": 0.1685,
+    "notes": "Original: 0.1718 -- fix does NOT generalize to noise, only to zeroing"
+  },
+  {
+    "phase": 14,
+    "experiment": "Modality dropout: camera heavy noise",
+    "change": "Same checkpoint, camera corrupted (not zeroed)",
+    "metric": "val_accuracy",
+    "result": 0.6355,
+    "notes": "Original: 0.6927 -- got WORSE, a real honest side effect"
+  },
+  {
+    "phase": 14,
+    "experiment": "Temporal: no memory baseline",
+    "change": "Existing single-frame model, latest frame only",
+    "metric": "val_accuracy",
+    "result": 0.82,
+    "notes": "150 real multi-view val sequences"
+  },
+  {
+    "phase": 14,
+    "experiment": "Temporal: bucketed memory",
+    "change": "8 frames compressed to 4 tokens (2 recent + 2 averaged groups)",
+    "metric": "val_accuracy",
+    "result": 0.8933,
+    "notes": "Fairly matched train/eval regime"
+  },
+  {
+    "phase": 14,
+    "experiment": "Temporal: full memory",
+    "change": "All 8 frames kept, no compression",
+    "metric": "val_accuracy",
+    "result": 0.8733,
+    "notes": "Bucketed matched-or-beat full memory in the fair comparison"
   }
 ]

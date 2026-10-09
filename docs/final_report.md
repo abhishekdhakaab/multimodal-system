@@ -39,6 +39,8 @@ Colab session for the GPU-dependent pieces.
 | Draft-then-escalate cascade | Cheap draft (~1,982x fewer FLOPs, 64.65% accuracy) escalates to the full model when unsure; at threshold=0.8: **24.3% of inputs resolved by the draft alone, 85.24% cascade accuracy (-0.77pts), ~1.32x avg-case compute saving** |
 | Mixture-of-Experts head | 3 experts, soft-trained/hard-evaluated: 83.92%/82.71% accuracy; **gate learned real semantic clustering (seating vs bedroom/bath vs desk furniture) unsupervised**; load-balancing loss tested, found not actually necessary here |
 | Sensor-failure robustness | Dropping lidar: 86.01%→20.15% (catastrophic); dropping camera: →61.34% (less bad); **noisy lidar (17.18%) is worse than zeroed lidar** — fusion does NOT give free robustness here, diagnosed why |
+| Modality-dropout fix | Retrained with dropout: lidar-dropped 20.15%→**56.61%** (+36.45pts), camera-dropped 61.34%→**81.28%** (+19.93pts); but noisy-sensor cases barely moved or got worse — fixes "sensor dies," not "sensor lies" |
+| Temporal bucket/group memory | 8-frame real multi-view sequences, frozen backbone + new temporal-attention layer: no-memory 82.00% → **bucketed (8→4 tokens) 89.33%** → full/uncompressed 87.33% — bucketing matched-or-beat full memory in a fair, matched comparison |
 
 ## 4. What's real vs. honestly simulated
 
@@ -202,6 +204,41 @@ noise). Diagnosed why: the model was never trained with a dropped or
 corrupted modality, so it had no reason to learn a fallback. The real
 fix (modality-dropout training) is named but not built — reported as a
 next step, not claimed as done.
+
+## 5g. The fix for robustness — and its honest limit
+
+Phase 13 diagnosed that fusion isn't robust to a dropped sensor; this
+pass actually fixed it: retraining with modality dropout (each example
+independently has lidar zeroed 15% of the time, image zeroed 15% of the
+time during training). The fix works dramatically for exactly the
+failure mode it targets — lidar-dropped accuracy jumped from 20.15% to
+56.61%, camera-dropped from 61.34% to 81.28%. It does **not** generalize
+to a different, related failure mode: a sensor producing corrupted-but-
+present values (noise, not zero). The noisy-lidar case barely moved, and
+the noisy-camera case got measurably worse (69.27%→63.55%). Reported
+both halves — "sensor dies" and "sensor lies" are different problems
+needing different fixes, and only one was solved here.
+
+## 5h. Temporal bucket/group memory — the last open keyword, resolved
+
+The one piece of feedback left unaddressed: a KV-cache-style
+bucket/group mechanism for "old tokens," which needed a sequence to
+exist at all first. Built one honestly: 8-frame sequences simulating a
+robot circling a real object (same real mesh, 8 different random
+viewpoints — stated plainly as simulated motion, not fabricated
+identity). Bucketed the sequence (8 frames → 4 memory tokens: 2 recent
+kept exact, 6 older averaged into 2 groups) and compared against no-
+memory and full-memory baselines.
+
+Before reporting anything, caught a real methodological trap: the first
+run evaluated a bucketed-trained model on full memory too, which is an
+unfair out-of-distribution test. Fixed by training two separately
+matched models. The corrected, fair result: no-memory 82.00% → bucketed
+89.33% → full 87.33% — bucketing matched-or-beat full memory even once
+the comparison was made fair, plausibly because the coarser
+representation regularizes better with only 400 training sequences.
+Stated as a plausible explanation for a small-scale result, not an
+overclaimed general finding.
 
 ## 6. Lessons
 

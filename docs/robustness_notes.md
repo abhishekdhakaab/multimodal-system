@@ -51,13 +51,42 @@ of the time while training), which forces the model to maintain usable
 features in the other modality rather than leaning on whichever one is
 more informative on average.
 
-## Honest status
+## The fix, actually built and measured
 
-This document reports the measurement and the diagnosis. The fix
-(modality-dropout training) was **not** implemented in this pass — it's
-a legitimate next step, not claimed as already done. If pursued, the
-right experiment is: retrain with modality dropout, re-run this exact
-robustness suite, and report whether the dropped/noisy-sensor numbers
-improve and by how much — the same diagnose-then-fix-then-measure
-pattern used for the overfitting and token-pruning findings elsewhere in
-this project.
+`model/train_modality_dropout.py` retrains from scratch with each
+training example independently having its lidar input zeroed with
+probability 0.15 and its image zeroed with probability 0.15 (reusing the
+existing training loop unchanged — only the input the model sees during
+training changed). `model/compare_robustness.py` runs the exact same
+failure suite against both checkpoints side by side, same noise seed, for
+a fair comparison:
+
+| Scenario | Original | Modality-dropout | Change |
+|---|---|---|---|
+| Clean | 86.01% | 84.69% | -1.32 pts (small, real cost) |
+| **Lidar dropped** | 20.15% | **56.61%** | **+36.45 pts** |
+| **Camera dropped** | 61.34% | **81.28%** | **+19.93 pts** |
+| Lidar heavy noise | 17.18% | 16.85% | -0.33 pts (no change) |
+| Camera heavy noise | 69.27% | 63.55% | -5.73 pts (**got worse**) |
+
+## The honest, complete picture — a partial fix with a real limit
+
+**The fix works, dramatically, for exactly the failure mode it was
+trained for**: a modality going completely to zero (a dead sensor).
+Both dropped-sensor scenarios improved by 20-36 points.
+
+**It does nothing for the other real failure mode**: a modality that's
+still producing values, just corrupted ones (noisy, not dead). Training
+with zeroed inputs teaches the model "handle an all-zero input
+gracefully" — it does not teach the model "be skeptical of a present but
+wrong-looking input," which is a different problem. The camera-noise
+case even got measurably worse, a real, honestly-reported side effect,
+not hidden because it doesn't fit the "the fix worked" narrative.
+
+**The complete, honest conclusion**: multimodal robustness isn't one
+problem with one fix — "sensor dies" and "sensor lies" are different
+failure modes requiring different training strategies (dropout augmentation
+for the former; something like noise-augmentation or outlier-robust
+losses for the latter, neither of which was attempted here). This
+project fixed one of the two, measured that it didn't generalize to the
+other, and reported both facts.
