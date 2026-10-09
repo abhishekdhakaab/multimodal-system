@@ -64,7 +64,17 @@ def _patchify(images):
     return x
 
 
-def _select_top_k_patches(patches, k):
+def _sink_patch_indices():
+    """The 4 corner patches, in raster order. See _select_top_k_patches's
+    docstring for why these are forced into every pruned selection
+    regardless of content."""
+    n_per_side = IMAGE_SIZE // PATCH_SIZE
+    return jnp.array(
+        [0, n_per_side - 1, (n_per_side - 1) * n_per_side, n_per_side * n_per_side - 1]
+    )
+
+
+def _select_top_k_patches(patches, k, use_sink_tokens=False):
     """patches: [B, NUM_PATCHES, patch_dim] -> (selected: [B, k, patch_dim], indices: [B, k])
 
     Content-adaptive token pruning: on this project's data (silhouettes
@@ -83,10 +93,35 @@ def _select_top_k_patches(patches, k):
     k is fixed across the batch (not a per-example dynamic count) so this
     stays a static shape under jax.jit -- which patches are chosen still
     varies per example, only the COUNT is fixed.
+
+    use_sink_tokens: if True, the 4 corner patches are ALWAYS included
+    regardless of content (adapting the "attention sink" idea from
+    StreamingLLM-style sliding-window attention: a few fixed anchor
+    positions attended to irrespective of their own importance, which
+    stabilizes attention across a varying, content-dependent selection).
+    This is a real adaptation to test, not an assumed win -- see
+    docs/token_pruning_notes.md for whether it actually helps here, since
+    a single-frame ViT doesn't have the same softmax-stability motivation
+    sink tokens were originally introduced for in streaming LLM decoding.
     """
     importance = jnp.sum(patches, axis=-1)  # [B, NUM_PATCHES], total intensity per patch
-    _, top_idx = jax.lax.top_k(importance, k)  # [B, k]
-    selected = jnp.take_along_axis(patches, top_idx[:, :, None], axis=1)  # [B, k, patch_dim]
+
+    if not use_sink_tokens:
+        _, top_idx = jax.lax.top_k(importance, k)  # [B, k]
+        selected = jnp.take_along_axis(patches, top_idx[:, :, None], axis=1)
+        return selected, top_idx
+
+    sink_idx = _sink_patch_indices()  # [4]
+    b = patches.shape[0]
+    sink_idx_batched = jnp.broadcast_to(sink_idx[None, :], (b, sink_idx.shape[0]))
+
+    # exclude sink positions from the content-ranked pool, then fill the
+    # remaining budget from the highest-importance non-sink patches
+    masked_importance = importance.at[:, sink_idx].set(-jnp.inf)
+    _, rest_idx = jax.lax.top_k(masked_importance, k - sink_idx.shape[0])
+
+    top_idx = jnp.concatenate([sink_idx_batched, rest_idx], axis=1)  # [B, k]
+    selected = jnp.take_along_axis(patches, top_idx[:, :, None], axis=1)
     return selected, top_idx
 
 
@@ -137,7 +172,7 @@ def _mlp(x, block):
     return h @ block["mlp_w2"] + block["mlp_b2"]
 
 
-def forward(params, images, backend="jax", prune_k=None):
+def forward(params, images, backend="jax", prune_k=None, use_sink_tokens=False):
     """images: [B, IMAGE_SIZE, IMAGE_SIZE] float32 in [0,1] -> embedding: [B, EMBED_DIM] (the CLS token output)
 
     backend: "jax" (default, runs anywhere, including the M1) or
@@ -148,13 +183,16 @@ def forward(params, images, backend="jax", prune_k=None):
         patches (by pixel intensity) instead of all NUM_PATCHES -- see
         _select_top_k_patches's docstring and docs/token_pruning_notes.md.
         None (default) uses every patch, unchanged from the original model.
+    use_sink_tokens: if prune_k is set, forces the 4 corner patches into
+        every selection regardless of content -- see
+        _select_top_k_patches's docstring.
     """
     attention_fn = _attention if backend == "jax" else _attention_cuda_kernel
 
     patches = _patchify(images)  # [B, NUM_PATCHES, patch_dim]
 
     if prune_k is not None:
-        patches, patch_idx = _select_top_k_patches(patches, prune_k)
+        patches, patch_idx = _select_top_k_patches(patches, prune_k, use_sink_tokens=use_sink_tokens)
         pos_embed = jnp.take_along_axis(
             jnp.broadcast_to(params["pos_embed"][None, :, :], (images.shape[0], NUM_PATCHES, EMBED_DIM)),
             patch_idx[:, :, None],

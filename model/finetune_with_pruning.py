@@ -29,14 +29,16 @@ from model.train import (
     compute_class_weights,
 )
 
+import argparse
+
 HERE = os.path.dirname(__file__)
 SHARDS_DIR = os.path.join(HERE, "..", "data_pipeline", "shards")
 CHECKPOINT_PATH = os.path.join(HERE, "checkpoints", "model.pkl")
-OUT_PATH = os.path.join(HERE, "checkpoints", "model_pruned_k50.pkl")
 
 PRUNE_K = 50
 FINETUNE_EPOCHS = 15
 FINETUNE_LR = 0.001
+USE_SINK_TOKENS = False  # set via --sink-tokens; see model/vision_encoder.py's forward()
 
 
 def load_split(split):
@@ -51,7 +53,7 @@ def load_split(split):
 
 
 def loss_fn(params, images, points, labels, class_weights):
-    logits = forward(params, images, points, prune_k=PRUNE_K)
+    logits = forward(params, images, points, prune_k=PRUNE_K, use_sink_tokens=USE_SINK_TOKENS)
     log_probs = jax.nn.log_softmax(logits)
     one_hot = jax.nn.one_hot(labels, NUM_CLASSES)
     per_example = -jnp.sum(one_hot * log_probs, axis=-1)
@@ -61,8 +63,8 @@ def loss_fn(params, images, points, labels, class_weights):
     return weighted + WEIGHT_DECAY * l2
 
 
-def accuracy_at_k(params, images, points, labels, k):
-    logits = forward(params, images, points, prune_k=k)
+def accuracy_at_k(params, images, points, labels, k, use_sink_tokens=False):
+    logits = forward(params, images, points, prune_k=k, use_sink_tokens=use_sink_tokens)
     preds = jnp.argmax(logits, axis=-1)
     return float(jnp.mean(preds == labels))
 
@@ -83,13 +85,18 @@ def train_step(params, adam_state, images, points, labels, class_weights):
 
 
 def main():
+    out_path = os.path.join(
+        HERE, "checkpoints", f"model_pruned_k50{'_sink' if USE_SINK_TOKENS else ''}.pkl"
+    )
+
     with open(CHECKPOINT_PATH, "rb") as f:
         params = pickle.load(f)
 
     train_images, train_points, train_labels = load_split("train")
     val_images, val_points, val_labels = load_split("val")
 
-    before_acc = accuracy_at_k(params, val_images, val_points, val_labels, PRUNE_K)
+    before_acc = accuracy_at_k(params, val_images, val_points, val_labels, PRUNE_K, USE_SINK_TOKENS)
+    print(f"sink tokens: {USE_SINK_TOKENS}")
     print(f"BEFORE fine-tune: accuracy at k={PRUNE_K} (post-hoc pruning, no retraining) = {before_acc:.4f}")
 
     class_weights = compute_class_weights(train_labels, NUM_CLASSES)
@@ -111,20 +118,24 @@ def main():
             losses.append(float(loss))
         print(f"epoch {epoch+1}/{FINETUNE_EPOCHS}  loss={np.mean(losses):.4f}")
 
-    after_acc_k50 = accuracy_at_k(params, val_images, val_points, val_labels, PRUNE_K)
+    after_acc_k50 = accuracy_at_k(params, val_images, val_points, val_labels, PRUNE_K, USE_SINK_TOKENS)
     after_acc_full = accuracy_at_k(params, val_images, val_points, val_labels, None)
 
     print()
-    print(f"AFTER fine-tune (trained WITH k={PRUNE_K} pruning):")
+    print(f"AFTER fine-tune (trained WITH k={PRUNE_K} pruning, sink_tokens={USE_SINK_TOKENS}):")
     print(f"  accuracy at k={PRUNE_K} (the regime it was fine-tuned for): {after_acc_k50:.4f}")
     print(f"  accuracy at full resolution (k=100, never trained at this k): {after_acc_full:.4f}")
     print(f"  recovered: {after_acc_k50 - before_acc:+.4f} vs post-hoc pruning")
     print(f"  vs original un-pruned baseline (86.01%): {after_acc_k50 - 0.8601:+.4f}")
 
-    with open(OUT_PATH, "wb") as f:
+    with open(out_path, "wb") as f:
         pickle.dump(jax.tree_util.tree_map(np.array, params), f)
-    print(f"saved to {OUT_PATH}")
+    print(f"saved to {out_path}")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sink-tokens", action="store_true")
+    args = parser.parse_args()
+    USE_SINK_TOKENS = args.sink_tokens
     main()

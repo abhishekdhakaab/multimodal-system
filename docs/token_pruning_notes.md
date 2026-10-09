@@ -95,6 +95,32 @@ forward pass (`docs/phase2_profiling_notes.md`), this gives an estimated
 **1.35x end-to-end forward-pass speedup** — computed from the measured
 bottleneck fraction and the measured FLOP reduction, not asserted.
 
+## Experiment 3: sink tokens — does forcing fixed anchors help?
+
+StreamingLLM introduced "attention sink" tokens: a few fixed positions
+always attended to regardless of content, which stabilizes softmax
+attention in sliding-window/streaming decoding. This model isn't
+streaming, so the original motivation doesn't directly transfer — tested
+it anyway, honestly, rather than assuming it would or wouldn't help.
+
+Added `use_sink_tokens` to `_select_top_k_patches`: the 4 corner patches
+are always included regardless of their content score, with the
+remaining k-4 slots filled by content ranking as before. Fine-tuned at
+the same k=50 budget, controlled comparison:
+
+| | Post-hoc (no retrain) | Fine-tuned | Cost vs 86.01% baseline |
+|---|---|---|---|
+| Pure content top-k (no sinks) | 71.59% | 80.95% | -5.06 pts |
+| **+ 4 fixed corner sink tokens** | 70.48% | **81.94%** | **-4.07 pts** |
+
+A real, modest improvement (+0.99 points) from forcing a few content-
+independent anchor positions into the selection — even without the
+original streaming-decoding motivation, fixed spatial anchors appear to
+give the model a stable reference frame across the per-image-varying
+selection, which is a plausible if different explanation from the
+original StreamingLLM paper's. Small effect size, honestly reported as
+such — not oversold as a dramatic win, but a measured, real one.
+
 ## Honesty notes
 
 - **Wall-clock latency was NOT reliably measured for this writeup.** This

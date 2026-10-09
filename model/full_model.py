@@ -14,7 +14,7 @@ def init_params(key):
     }
 
 
-def forward(params, images, pointclouds, backend="jax", prune_k=None):
+def forward(params, images, pointclouds, backend="jax", prune_k=None, use_sink_tokens=False):
     """images: [B,IMAGE_SIZE,IMAGE_SIZE], pointclouds: [B,N,3] -> logits: [B, NUM_CLASSES]
 
     backend: "jax" (runs anywhere) or "cuda_kernel" (vision encoder's core
@@ -23,8 +23,11 @@ def forward(params, images, pointclouds, backend="jax", prune_k=None):
     prune_k: if set, the vision encoder only attends over its top-k most
     informative patches instead of all of them -- see
     model/vision_encoder.py's forward() and docs/token_pruning_notes.md.
+    use_sink_tokens: see model/vision_encoder.py's forward().
     """
-    vision_embed = vision_encoder.forward(params["vision"], images, backend=backend, prune_k=prune_k)
+    vision_embed = vision_encoder.forward(
+        params["vision"], images, backend=backend, prune_k=prune_k, use_sink_tokens=use_sink_tokens
+    )
     lidar_points = lidar_encoder.forward_per_point(params["lidar"], pointclouds)
     logits = fusion.forward(params["fusion"], vision_embed, lidar_points)
     return logits

@@ -5,6 +5,7 @@ from model.vision_encoder import (
     EMBED_DIM,
     NUM_PATCHES,
     _select_top_k_patches,
+    _sink_patch_indices,
     forward,
     init_params,
 )
@@ -30,6 +31,17 @@ def test_pruned_forward_runs_and_differs_from_full():
     assert full.shape == (3, EMBED_DIM)
     assert pruned.shape == (3, EMBED_DIM)
     assert not jnp.allclose(full, pruned)
+
+
+def test_sink_tokens_always_included_regardless_of_content():
+    patches = jnp.ones((1, NUM_PATCHES, 4))  # uniform content -- sinks have no content advantage
+    sink_idx = _sink_patch_indices()
+    # give one non-sink patch a huge score so it would normally dominate the pool
+    patches = patches.at[0, 50, :].set(1000.0)
+    _, idx = _select_top_k_patches(patches, k=6, use_sink_tokens=True)
+    selected = set(idx[0].tolist())
+    assert set(sink_idx.tolist()).issubset(selected)
+    assert 50 in selected  # the high-content patch still gets one of the remaining slots
 
 
 def test_pruned_forward_with_all_patches_kept_is_close_to_full():
