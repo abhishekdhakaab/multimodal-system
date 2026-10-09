@@ -35,7 +35,8 @@ Colab session for the GPU-dependent pieces.
 | Canary rollout | v1→v2 promoted (0.83 vs 0.83 live accuracy); v2→v3-bad rolled back (0.105 vs 0.83) |
 | Hard-case mining | Held-out hard-case accuracy 25.71% → 37.14% (+11.43pts), overall val unchanged |
 | Zero-shot classification | 2 classes held out entirely from training; raw zero-shot 0.58% (below chance — seen-class bias), corrected to **24.42%** (2.4x random) via calibrated stacking |
-| Content-adaptive token pruning | Measured 53% of patches are near-empty (task-specific structure); fine-tuned with 50% tokens pruned: **80.95% accuracy (-5.06pts), ~2.65x fewer attention FLOPs** |
+| Content-adaptive token pruning | Measured 53% of patches are near-empty (task-specific structure); fine-tuned with 50% tokens pruned: **80.95% accuracy (-5.06pts), ~2.65x fewer attention FLOPs**; +sink tokens: 81.94% (-4.07pts) |
+| Draft-then-escalate cascade | Cheap draft (~1,982x fewer FLOPs, 64.65% accuracy) escalates to the full model when unsure; at threshold=0.8: **24.3% of inputs resolved by the draft alone, 85.24% cascade accuracy (-0.77pts), ~1.32x avg-case compute saving** |
 
 ## 4. What's real vs. honestly simulated
 
@@ -127,6 +128,30 @@ development machine had unrelated heavy background load (load average
 between trials even with warmup and min-of-7-trials. Rather than report a
 noisy number, the FLOP-based 1.35x end-to-end speedup estimate is clearly
 labeled as theoretical, with real measurement flagged as follow-up work.
+
+## 5d. Draft-then-escalate cascade — the honest analog to speculative decoding
+
+The user's feedback also asked for something like "speculative decoding."
+The literal version needs a VLA with real action-sequence data this
+project doesn't have (same fabrication problem flagged earlier). What
+transfers without that data is the underlying systems pattern: do the
+cheap thing first, only pay for the expensive thing when necessary.
+
+Built a deliberately cheap "draft" classifier (model/draft_classifier.py)
+— no attention, no learned per-point processing, just 14 hand-computed
+global statistics through a tiny MLP, ~1,982x cheaper than the full model
+(computed exactly for both architectures). Trained it on the same real
+data: 64.65% accuracy, far below the full model's 86.01% but far above
+the 10% random baseline. Built a confidence-gated cascade that escalates
+to the full model only when the draft isn't confident, and swept the
+threshold for a full curve rather than one cherry-picked point.
+
+At threshold=0.8: **24.3% of inputs resolved by the ~2000x-cheaper draft
+alone, at a cost of only 0.77 accuracy points versus always running the
+full model** — an estimated 1.32x average-case compute saving. This is
+the strongest curve of the three "novel contribution" additions (zero-
+shot, token pruning, this one) — it has a genuinely usable "good"
+operating region, not just a diagnostic finding.
 
 ## 6. Lessons
 

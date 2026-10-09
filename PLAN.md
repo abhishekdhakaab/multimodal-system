@@ -7,7 +7,7 @@
 ## STATUS
 
 ```
-Current phase: 10 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9, 10 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU.
+Current phase: 11 COMPLETE. Phases 0, 1, 2, 5, 6, 7, 8, 9, 10, 11 are all done with real, measured results. Only Phase 3 (CUDA kernel execution) and Phase 4 (benchmarking) remain, both genuinely blocked on the user running scripts/colab_sync.md on a real CUDA GPU. User asked (2026-10-08-ish) for wall-clock latency measurement to be deferred to later and for broader keyword coverage (sink tokens, speculative decoding, MoE) -- sink tokens and the speculative-decoding analog (cascade inference) are now done (Phase 10 addendum, Phase 11). MoE routing and the temporal/streaming bucket-KV-cache idea remain open, discussed with the user but not yet built -- see the running conversation for the prioritization reasoning (MoE next, temporal KV-cache last since it requires a real scope increase: multi-view sequences of the same real object to have "old tokens" to bucket at all).
 Last completed task:
   - REWORK of Phases 1-2: replaced hand-drawn synthetic shapes with ModelNet10 (real public CAD dataset, no signup) after user feedback that fake data "makes people lose interest." Both modalities derived from the same real mesh per example. See docs/dataset_rework_notes.md.
   - Found and fixed a REAL BUG, not just a tuning problem: model/fusion.py had NUM_CLASSES=4 hardcoded (leftover from the old 4-shape synthetic dataset), silently capping the model's output head at 4 of ModelNet10's 10 real classes. Found via ablation (vision-only=68.9%, lidar-only=87.7%, but the fused model scored only 35% -- worse than either alone, which is what made it clearly a bug and not just undertraining). Full story in docs/fusion_bug_notes.md. Fixed by importing NUM_CLASSES from the dataset's class list everywhere, plus added a regression test (test_fusion_num_classes_matches_real_dataset) so this exact bug class can't silently reappear.
@@ -214,6 +214,20 @@ Each phase has a **Definition of Done** — a concrete, testable condition. If y
 - [x] `model/tests/test_token_pruning.py`: 3 tests, including a correctness check that pruning down to "keep everything" exactly reproduces the unpruned forward pass.
 
 **Definition of Done:** a real, usable accuracy/compute tradeoff, honestly measured, directly motivated by a measured property of this project's own data — not a generic technique applied without looking. ✅ DONE. Full writeup in `docs/token_pruning_notes.md`, including an explicit note that wall-clock latency was NOT reliably measurable this session (machine load average 58-126 from unrelated processes) and the 1.35x figure is a theoretical FLOP-based estimate, not a measured number — flagged as follow-up work rather than papered over. 28/31 tests passing (3 GPU-dependent skip).
+
+**Addendum — sink tokens, tested empirically:** added `use_sink_tokens` (4 fixed corner patches always kept regardless of content, adapting StreamingLLM's attention-sink idea even though the original streaming-decoding motivation doesn't directly apply to this non-streaming model). Controlled A/B at k=50: without sinks 80.95% after fine-tuning, **with sinks 81.94% (+0.99pts)** — a real, modest, honestly-reported improvement, not assumed from the literature.
+
+---
+
+### Phase 11 — Draft-then-escalate cascade (the honest analog to speculative decoding)
+**Goal:** cover the "speculative decoding" keyword from user feedback without fabricating action-sequence data this project doesn't have.
+
+- [x] `model/draft_classifier.py`: a deliberately cheap classifier — no attention, no per-point MLP, 14 hand-computed global statistics (image quadrant mean/std, point-cloud centroid/spread) through a tiny 2-layer MLP. **~1,982x cheaper than the full model** (6,272 vs 12,432,768 FLOPs/example, computed exactly for both).
+- [x] `model/train_draft_classifier.py`: trained on the same real shards — **64.65% val accuracy** (far below the full model's 86.01%, far above the 10% random baseline).
+- [x] `model/cascade_infer.py`: confidence-gated routing — run the cheap draft first, escalate to the full model only when draft confidence is below a threshold. Swept the threshold for a full coverage/accuracy curve, not a single cherry-picked point.
+- [x] `model/tests/test_draft_classifier.py`: 3 tests.
+
+**Definition of Done:** a real, usable coverage/accuracy/compute tradeoff, not a toy. ✅ DONE. At threshold=0.8: **24.3% of inputs resolved by the ~2000x-cheaper draft alone, cascade accuracy 85.24% (-0.77pts vs always running the full model)** — an estimated 1.32x average-case compute saving. This curve has a genuinely usable "good" region (threshold 0.7-0.9), unlike the zero-shot result's uniformly-bad tradeoff — full writeup in `docs/speculative_cascade_notes.md`. 29/32 tests passing (3 GPU-dependent skip).
 
 ---
 
