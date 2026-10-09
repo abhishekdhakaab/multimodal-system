@@ -2,32 +2,27 @@
 JAX-side registration of the custom CUDA kernel as a real JAX primitive,
 usable inside jit like any other op.
 
-Targets `jax.extend.ffi` on a pinned jax/jaxlib==0.4.34 (see
-scripts/colab_sync.md for why -- Colab's default 0.11.1 has a CUDA
-plugin registry issue unrelated to this code). `jax.extend.ffi` is a
-LAZY submodule here: `import jax` alone doesn't attach it as an
-attribute (confirmed: `hasattr(jax, "extend")` is False even though
-`import jax.extend.ffi` then works) -- so this file imports it
-explicitly rather than accessing `jax.extend.ffi` off a bare `import jax`.
+CONFIRMED, with hard evidence, on pinned jax/jaxlib==0.4.34 (see
+scripts/colab_sync.md for the full real debugging history):
+- `register_custom_call_target` itself raises an explicit error for
+  api_version=4 ("Supported versions are 0 and 1") -- this jaxlib
+  build's compiled backend genuinely doesn't implement the typed-FFI
+  convention, regardless of what the Python wrapper functions expose.
+- `jax.extend.ffi.ffi_call`'s own lowering hardcodes
+  `kwargs.setdefault("api_version", 4)` with no public parameter to
+  override it (read directly from jax/_src/extend/ffi.py's source) --
+  so `ffi_call` structurally cannot invoke an api_version=1 (legacy ABI)
+  target at this jax version, not a usage mistake.
 
-Confirmed via `inspect.signature` AND by reading the installed source
-directly (`jax/_src/extend/ffi.py`) on Colab:
-- `register_ffi_target(name, fn, platform="cpu", api_version=1, **kwargs)`
-- `ffi_call(target_name, result_shape_dtypes, *args, vectorized=False,
-  has_side_effect=False, **kwargs)` -- single-stage (operands passed
-  directly, no separate builder step), and `**kwargs` always flows
-  through to the typed FFI attribute-binding machinery
-  (`ffi_lowering` -> CallFrame attributes), regardless of api_version.
-  That means `ffi_call` was never the right tool for invoking a plain
-  legacy "void** buffers + opaque bytes" handler -- this kernel's C++
-  side (custom_call.cpp) targets the typed-FFI convention instead
-  (`XLA_FFI_DEFINE_HANDLER_SYMBOL`, api_version=4), the same code that
-  compiled and linked cleanly on jaxlib 0.11.1 too.
+This file bypasses `ffi_call`/`ffi_lowering` entirely and defines a
+plain JAX primitive with a hand-written MLIR lowering rule via
+`jax.interpreters.mlir.custom_call`, which DOES expose `api_version` and
+accepts `backend_config` as a raw byte string (the legacy convention,
+unlike the newer dict-of-attributes convention `ffi_lowering` always
+uses) -- matching custom_call.cpp's simple ABI exactly.
 
-Build step (run on Colab, not here -- needs the FFI header path, which
-exists at this jax/jaxlib version too):
-    nvcc -shared -Xcompiler -fPIC -arch=sm_75 -std=c++17 \
-        -I$(python3 -c "import jax.extend.ffi; print(jax.extend.ffi.include_dir())") \
+Build step (run on Colab, not here):
+    nvcc -shared -Xcompiler -fPIC -arch=sm_75 \
         kernels/fused_attention.cu kernels/custom_call.cpp \
         -o kernels/fused_attention.so
 """
@@ -41,10 +36,11 @@ import jax.numpy as jnp
 SO_PATH = os.path.join(os.path.dirname(__file__), "fused_attention.so")
 
 _registered = False
+_primitive = None
 
 
 def _ensure_registered():
-    global _registered
+    global _registered, _primitive
     if _registered:
         return
     if not os.path.exists(SO_PATH):
@@ -53,18 +49,44 @@ def _ensure_registered():
             "(requires a CUDA GPU + nvcc, e.g. on Colab)."
         )
 
-    # imported lazily: jax.extend.ffi genuinely doesn't exist on every jax
-    # version (confirmed absent on the M1's local jax 0.11.2) -- this module
-    # must still import cleanly there, since kernels/tests/test_correctness.py
-    # imports it at module level and is expected to just skip, not error
-    import jax.extend.ffi
+    # imported lazily: these aren't needed (and may not exist) on every
+    # jax version/platform -- this module must still import cleanly on
+    # the M1, where there's no CUDA at all
+    from jax._src import core
+    from jax.interpreters import mlir
+    from jaxlib import xla_client
 
     lib = ctypes.CDLL(SO_PATH)
-    handler_fn = getattr(lib, "FusedAttentionHandler")
-    capsule = jax.extend.ffi.pycapsule(handler_fn)
-    jax.extend.ffi.register_ffi_target(
-        "fused_attention", capsule, platform="cuda", api_version=4
+    target_capsule = ctypes.cast(
+        getattr(lib, "FusedAttentionCustomCall"), ctypes.c_void_p
     )
+    xla_client.register_custom_call_target(
+        "fused_attention", target_capsule, platform="gpu", api_version=1
+    )
+
+    prim = core.Primitive("fused_attention")
+
+    def _abstract_eval(q, k, v, *, num_heads):
+        del v, num_heads
+        return core.ShapedArray(q.shape, q.dtype)
+
+    prim.def_abstract_eval(_abstract_eval)
+
+    def _lowering(ctx, q, k, v, *, num_heads):
+        b, nh, n, hd = ctx.avals_in[0].shape
+        opaque = f"{b} {num_heads} {n} {hd}".encode()
+        out = mlir.custom_call(
+            "fused_attention",
+            result_types=[mlir.aval_to_ir_type(ctx.avals_out[0])],
+            operands=[q, k, v],
+            backend_config=opaque,
+            api_version=1,
+        )
+        return out.results
+
+    mlir.register_lowering(prim, _lowering, platform="cuda")
+
+    _primitive = prim
     _registered = True
 
 
@@ -93,13 +115,6 @@ def fused_attention(q, k, v, num_heads):
     k_heads = split_heads(k)
     v_heads = split_heads(v)
 
-    out_heads = jax.extend.ffi.ffi_call(
-        "fused_attention",
-        jax.ShapeDtypeStruct(q_heads.shape, q_heads.dtype),
-        q_heads,
-        k_heads,
-        v_heads,
-        num_heads=num_heads,
-    )
+    out_heads = _primitive.bind(q_heads, k_heads, v_heads, num_heads=num_heads)
 
     return out_heads.transpose(0, 2, 1, 3).reshape(b, n, d)
