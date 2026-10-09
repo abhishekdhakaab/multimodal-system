@@ -1,23 +1,19 @@
 # Running Phase 3 on Google Colab
 
-Everything in `kernels/` was written on the M1 (no CUDA available there) and
-has **not been run**. This is expected per the project plan — Phase 3 is the
-first phase that needs a real GPU. Here's the workflow to actually build and
-test it.
+Everything in `kernels/` was originally written on the M1 (no CUDA available
+there), and the sections below were written blind, before ever running on
+real hardware. **Updated after the actual first Colab run** — the real
+errors hit, and the real fixes, are recorded here instead of the original
+guesses, so this doc now reflects what's actually true rather than what
+seemed plausible beforehand.
 
 ## 1. Get the code onto Colab
 
-Easiest path: push this repo to a (private, if you prefer) GitHub repo, then
-in a Colab notebook:
-
 ```python
-!git clone <your-repo-url> fenris
+!git clone https://github.com/abhishekdhakaab/multimodal-system.git fenris
 %cd fenris
 !pip install -r requirements.txt
 ```
-
-Alternative if you don't want to push to GitHub yet: zip the `fenris/`
-folder and upload it directly in the Colab file browser, then `!unzip`.
 
 ## 2. Confirm you have a GPU runtime
 
@@ -30,37 +26,46 @@ Runtime -> Change runtime type -> T4 GPU (free tier). Then verify:
 ## 3. Build the kernel
 
 ```python
-!nvcc -shared -Xcompiler -fPIC \
+!nvcc -shared -Xcompiler -fPIC -arch=sm_75 -std=c++17 \
+    -I$(python3 -c "import jax.ffi; print(jax.ffi.include_dir())") \
     kernels/fused_attention.cu kernels/custom_call.cpp \
     -o kernels/fused_attention.so
 ```
 
-**Expect this to fail on the first try.** Likely issues, in rough order of
-likelihood:
-- CUDA architecture flag needed for the T4 (compute capability 7.5): add
-  `-arch=sm_75` to the nvcc command above if it complains about missing
-  kernel launch support.
-- `cuda_runtime.h` not found: make sure the Colab runtime actually has the
-  CUDA toolkit (`!which nvcc` should print a path; if not, `!apt install
-  nvidia-cuda-toolkit` or use a Colab image that already has it).
+The `-arch=sm_75` flag (T4's compute capability) and the FFI header
+include path (`jax.ffi.include_dir()`, confirmed present at
+`<that path>/xla/ffi/api/ffi.h` on Colab) were both needed for real —
+not hypothetical, both come from the actual first successful build.
 
-## 4. Fix the JAX FFI registration
+## 4. What actually went wrong, in order (for real, not hypothetical)
 
-`kernels/register.py` targets `jax.extend.ffi`, written against the current
-JAX FFI docs but not tested against Colab's installed JAX version. If
-`register_ffi_target` or `ffi_call` errors with an API mismatch:
+Three real issues were found and fixed, each discovered only by running
+on actual hardware and pasting the real error back:
 
-```python
-import jax
-print(jax.__version__)
-help(jax.extend.ffi.ffi_call)  # check the actual signature on this install
-```
+1. **`jax.extend.ffi` doesn't exist** (JAX 0.11.1 on this Colab build).
+   The FFI API was promoted to a stable top-level `jax.ffi` module —
+   same function names, shorter path. Fixed in `kernels/register.py`.
 
-The fallback path (older, more stable API) is noted in both `custom_call.cpp`
-and `register.py`'s docstrings: `jax.lib.xla_client.register_custom_call_target`
-+ a manual `jax.lax.custom_call` wrapper. If you hit this, ask Claude to
-rewrite `register.py` against that API instead — the CUDA kernel itself
-(`fused_attention.cu`) doesn't need to change, only the Python/C++ glue.
+2. **`jax.ffi.ffi_call`'s real signature is two-stage**: it returns a
+   callable, which you then call with the operands — not a single call
+   taking operands directly. There's also no `opaque=` kwarg; found the
+   real signature via `inspect.signature(jax.ffi.ffi_call)` on Colab
+   rather than guessing again.
+
+3. **This build's CUDA plugin doesn't support the legacy "ORIGINAL"
+   custom-call ABI (api_version=1) at all** — confirmed because JAX's
+   *own internal* plugin initialization hits the identical
+   `"Unsupported custom call target type for api_version=1"` error,
+   independent of our kernel. This meant the original simple
+   `void** buffers + opaque bytes` C++ handler (`custom_call.cpp`)
+   had to be rewritten entirely against the modern typed-FFI convention
+   (`xla/ffi/api/ffi.h`, `XLA_FFI_DEFINE_HANDLER`/`XLA_FFI_REGISTER_HANDLER`,
+   api_version=4) — not just a Python-side glue fix. That rewrite is
+   what's in `custom_call.cpp` now; it was a best-effort rewrite against
+   the documented API, itself unverified by compilation until you run
+   it. If nvcc throws a real compile error on the macro/template usage,
+   that's the next thing to paste back and fix — same pattern as the
+   first three issues.
 
 ## 5. Run correctness tests
 
@@ -76,11 +81,14 @@ worth keeping for `docs/benchmark_results.md` later.
 Move on to Phase 4 (benchmarking) — `benchmarks/run_latency.py` is next,
 comparing stock JAX/XLA against this kernel. Report real numbers, including
 if the kernel *doesn't* win on some configuration — that's useful data too,
-not a failure.
+not a failure. Also worth getting a real wall-clock latency number for
+token pruning and the cascade here (see `docs/token_pruning_notes.md` and
+`docs/speculative_cascade_notes.md` — both only have FLOP-based theoretical
+estimates so far, deferred because the dev machine was too noisy to trust).
 
 ## 7. Bring results back
 
-Whatever you learn on Colab (what had to change in `register.py`, the actual
-benchmark numbers, anything that didn't work and why), paste it back here —
-I'll update `PLAN.md`'s STATUS block and `docs/` with the real findings
-rather than what I guessed while writing this blind.
+Whatever happens next (compiles clean, another real error, or real
+benchmark numbers), paste it back — `PLAN.md`'s STATUS block and the
+relevant `docs/` files get updated with what's actually true, not what
+was guessed in advance.

@@ -2,34 +2,30 @@
 JAX-side registration of the custom CUDA kernel as a real JAX primitive,
 usable inside jit like any other op.
 
-UPDATE (first real Colab run, JAX 0.11.1): `jax.extend.ffi` no longer
-exists -- confirmed via `hasattr(jax, "extend")` -> False on the actual
-Colab environment. The FFI API was promoted out of the experimental
-`jax.extend` namespace to a stable top-level `jax.ffi` module.
+UPDATE 3 (same Colab session): the api_version=1 "legacy" ABI (previous
+version of this file) is NOT supported by this jaxlib/CUDA-plugin build
+at all -- confirmed by JAX's OWN internal plugin init hitting the
+identical "Unsupported custom call target type for api_version=1" error
+independent of our code. custom_call.cpp was rewritten to the modern
+typed-FFI handler convention (api_version=4, CallFrame-based, built
+against `xla/ffi/api/ffi.h` -- confirmed present at
+`<jax.ffi.include_dir()>/xla/ffi/api/ffi.h` on Colab).
 
-UPDATE 2 (same session): `jax.ffi.ffi_call`'s real signature (confirmed
-via `inspect.signature` on Colab) is a two-stage call --
-`jax.ffi.ffi_call(target_name, result_shape_dtypes, **options)` returns a
-callable, which is then called with the actual operands -- not a single
-call taking operands directly. There's no `opaque=` kwarg; the legacy
-config string is `legacy_backend_config`, passed at the OUTER call
-(ffi_call itself), not the inner one. `custom_call_api_version` defaults
-to 4 (the modern typed-FFI calling convention, which expects a C++
-handler built against `xla/ffi/api/ffi.h`'s CallFrame-based API) -- our
-custom_call.cpp implements the OLDER, simpler "buffers + opaque bytes"
-ABI (api_version 1, XLA's "ORIGINAL" custom-call convention), so
-`custom_call_api_version=1` must be set explicitly.
-`jax.ffi.register_ffi_target`'s signature (also confirmed on Colab)
-already defaults to `api_version=1`, which matches -- no change needed
-there, but `platform="CUDA"` (not "gpu") is required.
+That handler self-registers via the `XLA_FFI_REGISTER_HANDLER` C++ macro
+when the shared library is loaded (dlopen runs static initializers
+regardless of which language triggered the load) -- so this file no
+longer calls `jax.ffi.register_ffi_target` manually. Loading the .so via
+ctypes is still needed to trigger that static registration in the first
+place.
 
-Switched the opaque payload from packed struct bytes to a plain text
-string ("B NUM_HEADS N HEAD_DIM") since `legacy_backend_config` is typed
-`str`, not `bytes` -- avoids any binary/string encoding risk. See
-custom_call.cpp's matching parse-side update.
+`custom_call_api_version` now uses the default (4), and the `num_heads`
+attribute is passed as a keyword argument on the INNER call (the
+callable `ffi_call(...)` returns), matching `.Attr<int32_t>("num_heads")`
+in custom_call.cpp's binding.
 
-Build step (run on Colab, not here):
-    nvcc -shared -Xcompiler -fPIC -arch=sm_75 \
+Build step (run on Colab, not here -- needs the FFI header path):
+    nvcc -shared -Xcompiler -fPIC -arch=sm_75 -std=c++17 \
+        -I$(python3 -c "import jax.ffi; print(jax.ffi.include_dir())") \
         kernels/fused_attention.cu kernels/custom_call.cpp \
         -o kernels/fused_attention.so
 """
@@ -55,14 +51,10 @@ def _ensure_registered():
             "(requires a CUDA GPU + nvcc, e.g. on Colab)."
         )
 
-    lib = ctypes.CDLL(SO_PATH)
-    target_capsule = ctypes.cast(
-        getattr(lib, "FusedAttentionCustomCall"), ctypes.c_void_p
-    )
-
-    jax.ffi.register_ffi_target(
-        "fused_attention", target_capsule, platform="CUDA", api_version=1
-    )
+    # loading the library runs its static initializers, which is what
+    # actually registers "fused_attention" with XLA (see custom_call.cpp's
+    # XLA_FFI_REGISTER_HANDLER) -- no Python-side registration call needed
+    ctypes.CDLL(SO_PATH)
     _registered = True
 
 
@@ -91,14 +83,10 @@ def fused_attention(q, k, v, num_heads):
     k_heads = split_heads(k)
     v_heads = split_heads(v)
 
-    opaque = f"{b} {num_heads} {n} {head_dim}"
-
     call = jax.ffi.ffi_call(
         "fused_attention",
         jax.ShapeDtypeStruct(q_heads.shape, q_heads.dtype),
-        custom_call_api_version=1,
-        legacy_backend_config=opaque,
     )
-    out_heads = call(q_heads, k_heads, v_heads)
+    out_heads = call(q_heads, k_heads, v_heads, num_heads=num_heads)
 
     return out_heads.transpose(0, 2, 1, 3).reshape(b, n, d)
