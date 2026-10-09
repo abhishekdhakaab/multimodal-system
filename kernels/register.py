@@ -2,26 +2,28 @@
 JAX-side registration of the custom CUDA kernel as a real JAX primitive,
 usable inside jit like any other op.
 
-UPDATE 3 (same Colab session): the api_version=1 "legacy" ABI (previous
-version of this file) is NOT supported by this jaxlib/CUDA-plugin build
-at all -- confirmed by JAX's OWN internal plugin init hitting the
-identical "Unsupported custom call target type for api_version=1" error
-independent of our code. custom_call.cpp was rewritten to the modern
-typed-FFI handler convention (api_version=4, CallFrame-based, built
-against `xla/ffi/api/ffi.h` -- confirmed present at
-`<jax.ffi.include_dir()>/xla/ffi/api/ffi.h` on Colab).
+UPDATE 3: the api_version=1 "legacy" ABI (two versions ago) is NOT
+supported by this jaxlib/CUDA-plugin build at all -- confirmed by JAX's
+OWN internal plugin init hitting the identical "Unsupported custom call
+target type for api_version=1" error independent of our code. Rewrote
+custom_call.cpp to the modern typed-FFI handler convention (api_version=4).
 
-That handler self-registers via the `XLA_FFI_REGISTER_HANDLER` C++ macro
-when the shared library is loaded (dlopen runs static initializers
-regardless of which language triggered the load) -- so this file no
-longer calls `jax.ffi.register_ffi_target` manually. Loading the .so via
-ctypes is still needed to trigger that static registration in the first
-place.
+UPDATE 4: the first typed-FFI attempt used `XLA_FFI_REGISTER_HANDLER`
+for C++-side static self-registration, which failed to LINK (undefined
+symbol `xla::ffi::GetXlaFfiApi`) -- that macro needs the full XLA
+runtime linked in, which isn't available in pip-distributed jaxlib.
+Read xla/ffi/api/api.h directly on Colab (rather than guessing a third
+time) and found the right tool already documented there:
+`XLA_FFI_DEFINE_HANDLER_SYMBOL`, explicitly "for users who want to
+export XLA FFI handler from a shared library as a C function symbol" --
+exactly this situation. custom_call.cpp now exports a plain `extern "C"`
+function; this file grabs it via ctypes and registers it from Python
+with `jax.ffi.register_ffi_target(..., api_version=4)` instead of
+relying on static self-registration.
 
-`custom_call_api_version` now uses the default (4), and the `num_heads`
-attribute is passed as a keyword argument on the INNER call (the
-callable `ffi_call(...)` returns), matching `.Attr<int32_t>("num_heads")`
-in custom_call.cpp's binding.
+The `num_heads` attribute is passed as a keyword argument on the INNER
+call (the callable `ffi_call(...)` returns), matching
+`.Attr<int32_t>("num_heads")` in custom_call.cpp's binding.
 
 Build step (run on Colab, not here -- needs the FFI header path):
     nvcc -shared -Xcompiler -fPIC -arch=sm_75 -std=c++17 \
@@ -51,10 +53,12 @@ def _ensure_registered():
             "(requires a CUDA GPU + nvcc, e.g. on Colab)."
         )
 
-    # loading the library runs its static initializers, which is what
-    # actually registers "fused_attention" with XLA (see custom_call.cpp's
-    # XLA_FFI_REGISTER_HANDLER) -- no Python-side registration call needed
-    ctypes.CDLL(SO_PATH)
+    lib = ctypes.CDLL(SO_PATH)
+    handler_fn = getattr(lib, "FusedAttentionHandler")
+    capsule = jax.ffi.pycapsule(handler_fn)
+    jax.ffi.register_ffi_target(
+        "fused_attention", capsule, platform="CUDA", api_version=4
+    )
     _registered = True
 
 
