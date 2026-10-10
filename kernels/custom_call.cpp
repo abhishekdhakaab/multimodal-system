@@ -1,26 +1,24 @@
-// C++ glue between JAX's XLA custom-call mechanism and the CUDA kernel
-// in fused_attention.cu.
+// Modern typed XLA FFI handler (CallFrame-based, api_version=4), exported
+// as a plain C symbol for Python-side registration.
 //
-// CONFIRMED, with hard evidence (not a guess) on pinned jax/jaxlib==0.4.34:
-// `jaxlib.xla_client.register_custom_call_target` itself raised
-// "UNIMPLEMENTED: API version 4 is not supported by RegisterCustomCallTarget.
-// Supported versions are 0 and 1." when tested directly on the CPU
-// platform. This jaxlib build's compiled backend genuinely does not
-// implement the typed-FFI convention (api_version=4) -- the Python-level
-// `ffi_call`/`register_ffi_target` wrappers expose that parameter, but
-// the underlying native code doesn't support it yet at this version.
-// api_version=1 (this file's ABI: plain void** buffers + opaque bytes)
-// is the one confirmed supported here.
-//
-// `jax.extend.ffi.ffi_call` itself can't be used to invoke this ABI
-// though -- its internal lowering hardcodes api_version=4 unconditionally
-// with no public way to override it. kernels/register.py bypasses it
-// entirely and builds the legacy custom-call HLO op directly via
-// `jax.interpreters.mlir.custom_call`, which does expose api_version=1.
+// This is the SAME handler that compiled and linked cleanly on Colab's
+// default jaxlib 0.11.1, where it turned out to hit a registry isolation
+// issue specific to that build's newer PJRT-plugin CUDA architecture
+// (registered with zero errors through two different registration
+// functions, but never reachable at execution -- see
+// scripts/colab_sync.md for the full history). Retried here against a
+// pinned, older jax/jaxlib (0.4.34), which predates that plugin split --
+// confirmed the FFI header exists at this version too
+// (`jax.extend.ffi.include_dir()` -> .../xla/ffi/api/ffi.h), and
+// `jax.extend.ffi.ffi_call`'s kwargs always flow through this same
+// typed-attribute mechanism (confirmed by reading its lowering source
+// directly), so this is the intended way to invoke a custom kernel here
+// too, not a step backward from the legacy ABI.
 
+#include "xla/ffi/api/ffi.h"
 #include <cuda_runtime.h>
-#include <cstdio>
-#include <string>
+
+namespace ffi = xla::ffi;
 
 extern "C" void launch_fused_attention(
     const float* q, const float* k, const float* v, float* out,
@@ -28,29 +26,36 @@ extern "C" void launch_fused_attention(
     cudaStream_t stream
 );
 
-// buffers[0..2] are Q, K, V (device pointers), buffers[3] is the output
-// (device pointer). `opaque` carries "B NUM_HEADS N HEAD_DIM" as plain
-// space-separated text (built in register.py) -- not null-terminated
-// per XLA's convention, so it's copied into a std::string using the
-// explicit length before parsing.
-extern "C" void FusedAttentionCustomCall(
+static ffi::Error FusedAttentionImpl(
     cudaStream_t stream,
-    void** buffers,
-    const char* opaque,
-    size_t opaque_len
+    ffi::Buffer<ffi::DataType::F32> q,
+    ffi::Buffer<ffi::DataType::F32> k,
+    ffi::Buffer<ffi::DataType::F32> v,
+    ffi::Result<ffi::Buffer<ffi::DataType::F32>> out,
+    int32_t num_heads
 ) {
-    std::string config(opaque, opaque_len);
-    int batch_size, num_heads, seq_len, head_dim;
-    std::sscanf(config.c_str(), "%d %d %d %d", &batch_size, &num_heads, &seq_len, &head_dim);
-
-    const float* q = reinterpret_cast<const float*>(buffers[0]);
-    const float* k = reinterpret_cast<const float*>(buffers[1]);
-    const float* v = reinterpret_cast<const float*>(buffers[2]);
-    float* out = reinterpret_cast<float*>(buffers[3]);
+    // q/k/v arrive as [B, num_heads, N, head_dim] (see fused_attention.cu's
+    // shape comment -- register.py reshapes to this layout before calling)
+    auto dims = q.dimensions();
+    int batch_size = static_cast<int>(dims[0]);
+    int n = static_cast<int>(dims[2]);
+    int head_dim = static_cast<int>(dims[3]);
 
     launch_fused_attention(
-        q, k, v, out,
-        batch_size, num_heads, seq_len, head_dim,
+        q.typed_data(), k.typed_data(), v.typed_data(), out->typed_data(),
+        batch_size, num_heads, n, head_dim,
         stream
     );
+    return ffi::Error::Success();
 }
+
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    FusedAttentionHandler, FusedAttentionImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Arg<ffi::Buffer<ffi::DataType::F32>>()  // q
+        .Arg<ffi::Buffer<ffi::DataType::F32>>()  // k
+        .Arg<ffi::Buffer<ffi::DataType::F32>>()  // v
+        .Ret<ffi::Buffer<ffi::DataType::F32>>()  // out
+        .Attr<int32_t>("num_heads")
+);
