@@ -57,6 +57,24 @@ on real hardware — just not yet embeddable in the full model's JAX forward
 pass until the upstream bug is worked around (e.g. by trying a jaxlib
 version well outside the two already ruled out).
 
+## Real full-model GPU vs. CPU latency (plain JAX, no custom kernel — unaffected by the blocker above)
+
+This comparison doesn't touch the custom CUDA kernel or the broken
+custom-call path at all — it's the exact same `model/full_model.forward`
+plain-JAX code, run on two real backends, via
+`benchmarks/gpu_latency_pruning_cascade.py`'s no-pruning baseline, batch
+size 64, min-of-7-trials:
+
+| Backend | Latency/batch (64) |
+|---|---|
+| M1 CPU (this laptop) | 6.6876 ms |
+| RunPod RTX 3090 | 0.3771 ms |
+| **Real GPU speedup** | **~17.7x** |
+
+This is the real heterogeneous-hardware number this section originally
+asked for — just via plain JAX ops on a real GPU, not the custom kernel,
+since that integration path is the one confirmed blocked.
+
 ## Why this split is realistic, not just a workaround
 
 In a real heterogeneous robot fleet, this is exactly the situation: cheaper
