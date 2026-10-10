@@ -5,10 +5,11 @@
 A multimodal (camera + lidar) perception system, built as a compiler/
 systems engineering project rather than an application demo: real data,
 a trained fusion model, a hand-profiled bottleneck fixed with a hand-
-written CUDA kernel, a dual-path edge runtime, a real Kubernetes fleet
-control plane, and a closed loop from field telemetry back into
-retraining. Built on a MacBook Pro M1 (no CUDA GPU) plus a planned Google
-Colab session for the GPU-dependent pieces.
+written CUDA kernel (built, run, and verified correct on a real RTX 3090),
+a dual-path edge runtime, a real Kubernetes fleet control plane, and a
+closed loop from field telemetry back into retraining. Built on a MacBook
+Pro M1 (no CUDA GPU) plus a rented RunPod GPU session for the GPU-dependent
+pieces (kernel execution, token-pruning/cascade latency).
 
 ## 2. Architecture
 
@@ -35,8 +36,9 @@ Colab session for the GPU-dependent pieces.
 | Canary rollout | v1→v2 promoted (0.83 vs 0.83 live accuracy); v2→v3-bad rolled back (0.105 vs 0.83) |
 | Hard-case mining | Held-out hard-case accuracy 25.71% → 37.14% (+11.43pts), overall val unchanged |
 | Zero-shot classification | 2 classes held out entirely from training; raw zero-shot 0.58% (below chance — seen-class bias), corrected to **24.42%** (2.4x random) via calibrated stacking |
-| Content-adaptive token pruning | Measured 53% of patches are near-empty (task-specific structure); fine-tuned with 50% tokens pruned: **80.95% accuracy (-5.06pts), ~2.65x fewer attention FLOPs**; +sink tokens: 81.94% (-4.07pts) |
-| Draft-then-escalate cascade | Cheap draft (~1,982x fewer FLOPs, 64.65% accuracy) escalates to the full model when unsure; at threshold=0.8: **24.3% of inputs resolved by the draft alone, 85.24% cascade accuracy (-0.77pts), ~1.32x avg-case compute saving** |
+| Content-adaptive token pruning | Measured 53% of patches are near-empty (task-specific structure); fine-tuned with 50% tokens pruned: **80.95% accuracy (-5.06pts), ~2.65x fewer attention FLOPs, 1.738x REAL measured GPU latency speedup** (beat the 1.35x FLOP-based estimate); +sink tokens: 81.94% (-4.07pts) |
+| Draft-then-escalate cascade | Cheap draft (~1,982x fewer FLOPs, 64.65% accuracy) escalates to the full model when unsure; at threshold=0.8: 24.3% of inputs resolved by the draft alone, 85.24% cascade accuracy (-0.77pts), but **real measured GPU speedup is only ~1.057x** (not the 1.32x FLOP estimate) — fixed GPU launch overhead dominates a draft model this small; threshold>=0.9 is measurably slower than always running the full model |
+| CUDA kernel (fused attention) | Verified correct on a real GPU (RunPod RTX 3090): max abs diff 2.98e-08 vs. CPU reference, 65.59us/launch — via a standalone CUDA/C++ harness, since JAX's pip CUDA plugin has a confirmed upstream bug blocking the XLA custom-call integration (not a code bug; see `scripts/runpod_sync.md`) |
 | Mixture-of-Experts head | 3 experts, soft-trained/hard-evaluated: 83.92%/82.71% accuracy; **gate learned real semantic clustering (seating vs bedroom/bath vs desk furniture) unsupervised**; load-balancing loss tested, found not actually necessary here |
 | Sensor-failure robustness | Dropping lidar: 86.01%→20.15% (catastrophic); dropping camera: →61.34% (less bad); **noisy lidar (17.18%) is worse than zeroed lidar** — fusion does NOT give free robustness here, diagnosed why |
 | Modality-dropout fix | Retrained with dropout: lidar-dropped 20.15%→**56.61%** (+36.45pts), camera-dropped 61.34%→**81.28%** (+19.93pts); but noisy-sensor cases barely moved or got worse — fixes "sensor dies," not "sensor lies" |
@@ -50,13 +52,19 @@ See the table in `README.md` — repeated here for completeness:
   profiling, ARM edge path, the k3d Kubernetes cluster, the canary
   controller's rollout/rollback decisions, the telemetry collector, the
   hard-case mining and fine-tune.
-- **Written but not yet run on real hardware:** the CUDA kernel, the XLA
-  custom-call integration, the CUDA edge path, and all of Phase 4
-  (benchmarking) — these need an actual CUDA GPU, which this machine
-  doesn't have. The code is written against a verified reference algorithm
-  (matches the real model's attention math to 3.5e-10) and a documented,
-  honest Colab build/debug workflow (`scripts/colab_sync.md`), but the
-  real numbers are pending that session.
+- **Run on a real GPU, with a confirmed upstream blocker honestly
+  documented:** the CUDA kernel (matches the real model's attention math
+  to 3.5e-10 against the reference algorithm) was built, executed, and
+  verified correct on a RunPod RTX 3090 (max abs diff 2.98e-08, 65.59us/
+  launch) via a standalone CUDA/C++ harness. The JAX/XLA custom-call
+  integration specifically remains blocked — not by this project's code,
+  but by a confirmed bug in pip `jax[cuda12]==0.4.34`'s own CUDA plugin
+  initialization (reproduced identically across Colab and a full-root
+  RunPod VM, traced to JAX's own plugin module failing to register its
+  own built-in handlers). Full evidence trail in `scripts/runpod_sync.md`.
+  Real wall-clock latency for token pruning and the cascade (previously
+  FLOP-estimate-only) was also measured on this same GPU session — see
+  `docs/token_pruning_notes.md` and `docs/speculative_cascade_notes.md`.
 - **Deliberately labeled as simulated:** the second Kubernetes node
   (`node-type=gpu-simulated, gpu=false`) — there's no real GPU node
   attached to the fleet yet. The label itself says so.
@@ -125,13 +133,12 @@ usable -5.06 point cost for a real, honestly-computed 2.65x reduction in
 attention FLOPs** (not a hand-waved O(N²) estimate — computed for this
 model's exact dimensions).
 
-Also honest about a limitation discovered mid-experiment: wall-clock
-latency could not be reliably measured this session because the
-development machine had unrelated heavy background load (load average
-58-126 from browser/Discord/VM processes) — timing varied more than 5x
-between trials even with warmup and min-of-7-trials. Rather than report a
-noisy number, the FLOP-based 1.35x end-to-end speedup estimate is clearly
-labeled as theoretical, with real measurement flagged as follow-up work.
+Wall-clock latency was initially deferred (the dev machine had unrelated
+heavy background load, timing varied >5x between trials) and later
+measured for real on a quiet RunPod RTX 3090: **1.738x real speedup at
+k=50**, actually beating the 1.35x FLOP-based estimate — pruning also cuts
+GPU memory-traffic/kernel overhead the FLOP count didn't capture. Full
+numbers in `docs/token_pruning_notes.md`.
 
 ## 5d. Draft-then-escalate cascade — the honest analog to speculative decoding
 
@@ -150,12 +157,18 @@ the 10% random baseline. Built a confidence-gated cascade that escalates
 to the full model only when the draft isn't confident, and swept the
 threshold for a full curve rather than one cherry-picked point.
 
-At threshold=0.8: **24.3% of inputs resolved by the ~2000x-cheaper draft
-alone, at a cost of only 0.77 accuracy points versus always running the
-full model** — an estimated 1.32x average-case compute saving. This is
-the strongest curve of the three "novel contribution" additions (zero-
-shot, token pruning, this one) — it has a genuinely usable "good"
-operating region, not just a diagnostic finding.
+At threshold=0.8: 24.3% of inputs resolved by the draft alone, at a cost
+of only 0.77 accuracy points versus always running the full model — the
+*accuracy* curve is real and holds up. The *compute-saving* claim did not:
+measured for real on a quiet RunPod RTX 3090, the draft model turned out
+to be only **~5.3x cheaper in wall-clock terms**, not the ~1,982x its FLOP
+count suggested — a model this small is dominated by fixed GPU kernel-
+launch overhead, not FLOPs. That drops the threshold=0.8 real speedup to
+**~1.057x** (essentially break-even), and threshold>=0.9 is measurably
+*slower* than skipping the cascade entirely. This is reported as a real,
+useful finding in its own right — a FLOP-based savings estimate can be
+actively misleading for small ops on real hardware — not hidden because
+it complicates the pitch. Full numbers in `docs/speculative_cascade_notes.md`.
 
 ## 5e. Mixture-of-Experts — testing the mechanism honestly, not assuming it helps
 
@@ -260,7 +273,11 @@ overclaimed general finding.
 
 ## 7. What's left
 
-Phase 3 (CUDA kernel) and Phase 4 (benchmarking) are written/planned but
-blocked on a Google Colab session to actually run on real CUDA hardware.
-`PLAN.md`'s `STATUS` block has the exact next steps for whoever (human or
-AI) picks this back up.
+Phase 3 (CUDA kernel) is complete: verified correct and timed on a real
+GPU via a standalone harness. The one piece still blocked is the JAX/XLA
+custom-call integration specifically — a confirmed upstream bug in pip
+`jax[cuda12]==0.4.34`, not something fixable in this project's code (see
+`scripts/runpod_sync.md`). If ever revisited, the next thing worth trying
+is a jaxlib version well outside the two already ruled out (0.4.34,
+0.11.1), not more registration-code changes. `PLAN.md`'s `STATUS` block
+has the exact next steps for whoever (human or AI) picks this back up.
