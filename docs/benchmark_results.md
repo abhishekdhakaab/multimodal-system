@@ -40,6 +40,23 @@ on a discrete GPU, the other is the entire model's forward pass on a CPU)
 — they're reported separately and honestly, not combined into a misleading
 ratio.
 
+## Token pruning and cascade: real wall-clock latency (RunPod RTX 3090)
+
+Both were previously FLOP-based theoretical estimates only (the M1 was too
+noisy to trust timing — see `docs/token_pruning_notes.md` and
+`docs/speculative_cascade_notes.md`). Measured for real on the same quiet
+RunPod GPU via `benchmarks/gpu_latency_pruning_cascade.py`:
+
+- **Token pruning held up better than its estimate**: real speedup at
+  k=50 is **1.738x** vs. the FLOP-based estimate of 1.35x.
+- **The cascade did not hold up**: the draft model's FLOP count suggested
+  it's ~1,982x cheaper than the full model; in real wall-clock terms it's
+  only ~5.3x cheaper (fixed GPU per-launch overhead dominates a model this
+  small). The "practical operating point" (threshold=0.8) that looked like
+  a 1.32x average-case win is actually only ~1.057x in real measurement,
+  and threshold>=0.9 is measurably *slower* than always running the full
+  model. Full numbers and discussion in `docs/speculative_cascade_notes.md`.
+
 ## What's still missing, and why
 
 A real JAX-vs-kernel speedup ratio for the vision encoder's self-attention

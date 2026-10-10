@@ -64,26 +64,84 @@ cascade is dominated by how often it escalates:
 | 0.8 | 75.7% | **~1.32x** |
 | 0.9 | 87.7% | **~1.14x** |
 
-## Why this curve is more convincing than the other two additions
+## Why this curve looked more convincing than the other two additions — before real latency numbers existed
 
 Unlike the zero-shot result (a genuinely bad trade at every operating
-point) and token pruning (a real but narrower win), this curve has an
-honest, clearly-articulable "good" region: threshold 0.7-0.9 gives
-meaningful, real compute savings (12-38% of inputs skip the expensive
-model) for a very small, clearly quantified accuracy cost (0.1-1.6
-points). That's a genuinely deployable result, not just a diagnostic one.
+point), this curve has an honest, clearly-articulable "good" region in
+*accuracy-vs-escalation-rate* terms: threshold 0.7-0.9 trades a very
+small, clearly quantified accuracy cost (0.1-1.6 points) for 12-38% of
+inputs skipping the expensive model. That part is still true and real.
+
+**What changed once real wall-clock latency was measured (see below):**
+the FLOP-based compute savings this section originally claimed (~1.32x at
+threshold=0.8) don't hold up on real GPU hardware — the actual speedup
+there is closer to break-even. Token pruning, by contrast, holds up *better*
+than its FLOP estimate in real measurement. Read both updated sections
+below before treating either "which optimization wins" framing as settled.
+
+## Real wall-clock latency (RunPod RTX 3090, quiet dedicated GPU, 2026-10-10) — a surprising, honest reversal
+
+Measured via `benchmarks/gpu_latency_pruning_cascade.py`, batch size 64,
+min-of-7-trials, random params at the models' real shapes:
+
+| | latency/batch |
+|---|---|
+| Full model | 0.3767 ms |
+| Draft model | 0.0712 ms |
+| **Real draft-model speedup** | **5.29x cheaper** |
+
+The FLOP count said the draft model is ~1,982x cheaper; in real wall-clock
+terms on this GPU it's only ~5.3x cheaper. The draft model (14 hand-computed
+stats through a tiny 2-layer MLP) is so small that **fixed per-launch GPU
+overhead (kernel dispatch, not FLOPs) dominates its cost** — FLOPs were
+never the bottleneck for an op this small, so the FLOP-based "~2000x
+cheaper" estimate was theoretically correct but practically misleading
+about wall-clock terms.
+
+That changes the average-case cascade numbers completely:
+
+| threshold | escalate fraction | avg latency/batch | real speedup vs always-full |
+|---|---|---|---|
+| 0.0 (always draft) | 0.0% | 0.0712 ms | 5.29x |
+| 0.5 | 24.4% | 0.1631 ms | 2.31x |
+| 0.6 | 45.7% | 0.2433 ms | 1.55x |
+| 0.7 | 62.3% | 0.3059 ms | 1.23x |
+| **0.8 (the "practical operating point" claimed above)** | 75.7% | 0.3563 ms | **1.057x** |
+| 0.9 | 87.7% | 0.4015 ms | **0.938x (SLOWER than always-full)** |
+| 1.0 (always full) | 100.0% | 0.4479 ms | 0.841x (slower — draft cost is pure overhead here) |
+
+**This reverses the headline claim above.** The "practical operating
+point" (threshold=0.8) was sold as a ~1.32x average-case speedup from the
+FLOP estimate; the real measured speedup there is only **1.057x** — barely
+worth it. At threshold=0.9 and especially 1.0 (always escalate), running
+the draft model first actually makes things *slower* than skipping it
+entirely, because its wall-clock cost isn't negligible the way its FLOP
+count suggested.
+
+**Why this matters more than a clean win would**: this is a real, honest
+systems lesson, not a failure to hide — a technique's FLOP-based savings
+estimate can be actively misleading on real hardware when the cheap
+component's absolute cost is dominated by fixed per-op overhead rather
+than compute. The cascade pattern is still sound in principle (and the
+*accuracy* curve above is real and unaffected), but on this specific GPU,
+with this specific draft model's size, it only pays off in wall-clock
+terms at low-to-moderate escalation rates (threshold <= ~0.6), not at the
+threshold originally recommended.
 
 ## Honesty notes
 
 - The draft model's 64.65% accuracy and the full model's 86.01% are both
-  real, measured numbers (not reused from memory — recomputed in this
-  session).
+  real, measured numbers (not reused from memory — recomputed earlier in
+  this project).
 - The FLOP counts for both models are computed exactly for their actual
-  architectures and dimensions, not order-of-magnitude guesses.
-- As with token pruning, wall-clock latency for the cascade was not
-  re-measured this session (same noisy-machine caveat as
-  `docs/token_pruning_notes.md`) — the 1.32x/1.14x figures are average-
-  case FLOP-based estimates, clearly labeled as such.
+  architectures and dimensions, not order-of-magnitude guesses — they are
+  real numbers, just not predictive of wall-clock behavior at this scale,
+  as the measurement above shows.
+- The wall-clock numbers above are real, measured on a quiet dedicated GPU
+  (RunPod RTX 3090) with no other load, via `benchmarks/gpu_latency_pruning_cascade.py`.
+  The old FLOP-based 1.32x/1.14x estimates are kept above for context, not
+  deleted, since the gap between estimate and measurement is the most
+  interesting part of this result.
 - This cascade pattern composes with the token-pruning work: the "full
   model" fallback path could itself use pruned attention, compounding
   the savings — not implemented here, noted as a natural next step.

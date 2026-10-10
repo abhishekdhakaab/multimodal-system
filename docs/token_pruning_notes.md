@@ -129,16 +129,41 @@ selection, which is a plausible if different explanation from the
 original StreamingLLM paper's. Small effect size, honestly reported as
 such — not oversold as a dramatic win, but a measured, real one.
 
+## Real wall-clock latency (RunPod RTX 3090, quiet dedicated GPU, 2026-10-10)
+
+The FLOP-based 1.35x estimate above was deferred-pending-measurement
+because the dev machine was too noisy to trust. Measured for real via
+`benchmarks/gpu_latency_pruning_cascade.py` (random params at the model's
+real shapes — latency depends on the compute graph, not weight values or
+which data is used, so a checkpoint isn't needed for this number), batch
+size 64, min-of-7-trials:
+
+| k (tokens kept) | latency/batch | speedup vs no-pruning |
+|---|---|---|
+| 100 (no pruning) | 0.3771 ms | 1.000x |
+| 80 | 0.3032 ms | 1.244x |
+| 60 | 0.2271 ms | 1.660x |
+| **50** | **0.2170 ms** | **1.738x** |
+| 40 | 0.2064 ms | 1.827x |
+| 30 | 0.1936 ms | 1.948x |
+| 20 | 0.1799 ms | 2.097x |
+
+**The real measured speedup at k=50 (1.738x) is notably better than the
+1.35x FLOP-based estimate**, not worse — the FLOP accounting only counted
+the attention block's linear-algebra cost; on a real GPU, pruning also
+cuts kernel launch/memory-traffic overhead elsewhere in the forward pass
+that the FLOP count didn't capture. Both numbers are now in this doc:
+the FLOP estimate for the *why* (what the compute-bound reasoning
+predicts) and this measurement for the *what actually happens on real
+hardware*.
+
 ## Honesty notes
 
-- **Wall-clock latency was NOT reliably measured for this writeup.** This
-  machine's load average was 58-126 while testing (Chrome/Playwright/
-  Discord/a VM all competing for CPU, unrelated to this project) — timing
-  runs varied by more than 5x between trials even with warmup and
-  min-of-7-trials. The 1.35x figure above is a FLOP-based theoretical
-  estimate, clearly labeled as such, not a measured wall-clock number. A
-  trustworthy wall-clock number needs a quiet machine or the target edge
-  hardware — noted as follow-up work, not silently assumed.
+- The wall-clock numbers above are real, measured on a quiet dedicated
+  GPU with no other load — not the noisy M1 session mentioned in earlier
+  drafts of this doc. The old FLOP-based 1.35x estimate is kept above for
+  context, not deleted, since the gap between estimate and measurement is
+  itself worth seeing.
 - The accuracy numbers ARE real and reliable — identical across repeated
   runs, no noise there.
 - This optimization is specific to this dataset's structure (sparse
