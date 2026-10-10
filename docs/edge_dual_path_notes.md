@@ -27,18 +27,35 @@ specific op.
 ```
 
 The ARM path is real and measured: 0.451ms for a single inference on the
-M1's CPU. The CUDA path correctly reports that it can't run here instead of
-pretending to have a number — that's the honest state until the kernel is
-built and tested on Colab (Phase 3/4).
+M1's CPU.
 
-## What to do once Colab results come back
+## CUDA path status: kernel verified, JAX integration blocked (confirmed upstream bug, not a guess)
 
-Re-run `python -m edge.compare_paths` on Colab (after building
-`fused_attention.so` per `scripts/colab_sync.md`) to get the real head-to-
-head: both paths will run, and the script reports the speedup ratio and
-whether both paths agree on the prediction. Paste those real numbers back
-into this file, replacing the "not available" line above — do not estimate
-or guess what the CUDA path's latency "should" be.
+`edge/cuda_path/infer.py` calls the kernel through `kernels/register.py`,
+which routes through JAX's XLA custom-call mechanism. That integration path
+is confirmed blocked: real debugging across two environments (Colab T4,
+then a full-root RunPod RTX 3090 — see `scripts/colab_sync.md` and
+`scripts/runpod_sync.md`) traced the failure to JAX's own pip-distributed
+CUDA PJRT plugin (`jax[cuda12]==0.4.34`) failing to fully initialize its
+custom-call registry — our handler registers with zero error every time,
+it's simply never reachable at execution. This is an upstream packaging
+bug, not something fixable in this project's glue code, and not something
+that will resolve by changing `register.py`/`custom_call.cpp` further.
+
+So `python -m edge.compare_paths` cannot produce a real side-by-side number
+through JAX right now — it would just repeat the same blocked call.
+
+**What IS real**: `kernels/tests/standalone_cuda_test.cu` calls the exact
+same compiled kernel directly, bypassing JAX/XLA entirely, and on the RunPod
+RTX 3090 measured:
+```
+max abs diff (kernel vs CPU reference): 2.98e-08   (correct, fp32-noise level)
+avg kernel latency: 65.59us  (batch=2, heads=4, N=101, head_dim=12, 200 iters)
+```
+That 65.6us is the real, measured cost of the fused-attention kernel itself
+on real hardware — just not yet embeddable in the full model's JAX forward
+pass until the upstream bug is worked around (e.g. by trying a jaxlib
+version well outside the two already ruled out).
 
 ## Why this split is realistic, not just a workaround
 
