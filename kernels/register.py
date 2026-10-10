@@ -61,7 +61,7 @@ def _ensure_registered():
         getattr(lib, "FusedAttentionCustomCall"), ctypes.c_void_p
     )
     xla_client.register_custom_call_target(
-        "fused_attention", target_capsule, platform="gpu", api_version=1
+        "fused_attention", target_capsule, platform="CUDA", api_version=1
     )
 
     prim = core.Primitive("fused_attention")
